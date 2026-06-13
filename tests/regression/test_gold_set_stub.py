@@ -1,1 +1,1 @@
-"""Stub — will discover gold PDFs and run full pipeline once Sprint 1 is built."""
+# This file is intentionally empty — superseded by test_gold_set.py

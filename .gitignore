@@ -57,3 +57,11 @@ htmlcov/
 # Secrets
 *.key
 secrets.json
+
+# Personal planning documents (not part of the codebase)
+briefing.pdf
+explanation.pdf
+explanation\ (1).pdf
+roadmap.pdf
+mentor_questions.md
+teaching_deep_dive.md
