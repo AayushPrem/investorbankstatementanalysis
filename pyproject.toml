@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "bsaa"
+version = "0.1.0"
+description = "Agentic Bank Statement Analysis Platform — Indian market"
+requires-python = ">=3.11"
+dependencies = [
+    "pdfplumber>=0.11",
+    "pymupdf>=1.24",
+    "tabula-py>=2.9",
+    "pydantic>=2.7",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "anthropic>=0.28",
+    "streamlit>=1.35",
+    "openpyxl>=3.1",
+    "weasyprint>=62",
+    "jinja2>=3.1",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "sentence-transformers>=3.0",
+    "reportlab>=4.2",
+    "networkx>=3.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-openpyxl>=3.1",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["schema*", "adapters*", "pipeline*", "analysis*", "jurisdictions*", "reports*", "profiles*", "tools*", "demo*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+exclude = ["tests/", "demo/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short"

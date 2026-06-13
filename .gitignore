@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.env
+*.env
+
+# Data (keep directory structure only)
+data/synthetic/**
+data/real_anonymised/**
+data/gold/**
+!data/synthetic/.gitkeep
+!data/real_anonymised/.gitkeep
+!data/gold/.gitkeep
+!data/gold/labels/.gitkeep
+
+# Results (keep directory structure only)
+results/**
+!results/.gitkeep
+
+# Pipeline state and cache
+.pipeline_state/**
+!.pipeline_state/.gitkeep
+.cache/**
+!.cache/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+.coverage
+htmlcov/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets
+*.key
+secrets.json
