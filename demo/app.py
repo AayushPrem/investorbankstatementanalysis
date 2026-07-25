@@ -12,24 +12,24 @@ from __future__ import annotations
 
 import hashlib
 import sys
+import tempfile
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-import streamlit as st
-
 from decimal import Decimal
 
-from analysis.financial_analyst import FinancialMetrics
-from analysis.financial_health_alerts import FinancialHealthReport
-from analysis.risk import RiskReport, Severity
-from analysis.customer_analytics import CustomerAnalyticsReport
+import streamlit as st
+
 from analysis.reconciliation import CompanyClaims
+from analysis.risk import Severity
 from demo.pipeline_runner import DemoResult, run_pipeline_on_bytes
+from pipeline.batch import BatchInput, BatchOrchestrator
 from pipeline.related_party import Affiliate, extract_counterparties
-from reports.angel_lens import _fmt_amount, _fmt_growth, _fmt_runway, _verdict
+from reports.angel_lens import _fmt_amount, _fmt_growth, _fmt_runway
+from reports.network_lens import CompanySummary, NetworkLensReport, build_company_summary
 from schema.canonical import StatementDocument
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -137,14 +137,24 @@ def _inr(v: float) -> str:
 # Sidebar — generator + upload + pipeline info
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _sidebar() -> tuple[bytes | None, str, str]:
-    """Render sidebar.  Returns (pdf_bytes, source_name, company_name)."""
+def _render_sidebar_header() -> str:
+    """Render the BSAA header + top-level analysis-mode switch. Returns the mode."""
     with st.sidebar:
         st.markdown("## 🏦 BSAA")
-        st.caption("Bank Statement Analysis Agent · Sprint 2")
+        st.caption("Bank Statement Analysis Agent · Sprint 4")
+        analysis_mode = st.radio(
+            "Analysis mode",
+            ["Single Company", "Network (multi-company)"],
+            key="analysis_mode",
+        )
         st.divider()
+    return analysis_mode
 
-        mode = st.radio(
+
+def _sidebar() -> tuple[bytes | None, str, str]:
+    """Render single-company sidebar controls. Returns (pdf_bytes, source_name, company_name)."""
+    with st.sidebar:
+        source_mode = st.radio(
             "Statement source",
             ["📤 Upload PDF", "🏗️ Generate Synthetic"],
             horizontal=True,
@@ -155,7 +165,7 @@ def _sidebar() -> tuple[bytes | None, str, str]:
         source_name: str = ""
         company_name: str = ""
 
-        if mode == "📤 Upload PDF":
+        if source_mode == "📤 Upload PDF":
             uploaded = st.file_uploader(
                 "Upload a bank statement PDF",
                 type=["pdf"],
@@ -213,7 +223,7 @@ def _sidebar() -> tuple[bytes | None, str, str]:
             generate_clicked = st.button("⚡ Generate & Analyse", type="primary", use_container_width=True)
 
             if generate_clicked:
-                from tools.synthetic_gen import generate_statement_to_bytes, _COMPANY_CONFIGS
+                from tools.synthetic_gen import generate_statement_to_bytes
 
                 with st.spinner(f"Generating {n_months}-month {_PROFILE_LABELS[profile]} statement…"):
                     pdf_bytes, gen_company, injected = generate_statement_to_bytes(
@@ -583,8 +593,8 @@ def _render_tab_risk(result: DemoResult) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _render_tab_customers(result: DemoResult) -> None:
-    import plotly.graph_objects as go
     import pandas as pd
+    import plotly.graph_objects as go
 
     ca = result.customer_analytics
 
@@ -1038,10 +1048,171 @@ def _render_landing() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Network mode — multi-company batch analysis (Sprint 4)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_network_batch(uploaded_files: list, concurrency: int) -> None:
+    """Write uploaded files to disk, run the batch pipeline, build the network
+    lens, and stash everything needed to render it in st.session_state.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        inputs: list[BatchInput] = []
+        for f in uploaded_files:
+            file_path = tmp_path / f.name
+            file_path.write_bytes(f.read())
+            inputs.append(BatchInput(path=str(file_path), company_name=Path(f.name).stem))
+
+        progress_bar = st.progress(0.0, text="Starting batch…")
+        done = {"count": 0}
+
+        def _progress(path: str, outcome: object) -> None:
+            done["count"] += 1
+            progress_bar.progress(
+                done["count"] / len(inputs), text=f"Processed {done['count']}/{len(inputs)}"
+            )
+
+        batch_result = BatchOrchestrator(concurrency=concurrency).run_batch(
+            inputs, progress_callback=_progress,
+        )
+        progress_bar.empty()
+
+        summaries: list[CompanySummary] = []
+        failures: dict[str, str] = {}
+        for item in inputs:
+            outcome = batch_result.results.get(item.path)
+            if isinstance(outcome, Exception):
+                failures[item.resolved_company_name()] = str(outcome)
+                continue
+            summaries.append(build_company_summary(
+                company_name=item.resolved_company_name(),
+                doc=outcome.doc, metrics=outcome.metrics,
+                risk_report=outcome.risk_report,
+                customer_analytics=outcome.customer_analytics,
+                compliance_report=outcome.compliance_report,
+            ))
+
+        xlsx_bytes, pdf_bytes = NetworkLensReport().generate(summaries)
+
+        st.session_state["network_batch_summary"] = batch_result.summary
+        st.session_state["network_summaries"] = summaries
+        st.session_state["network_failures"] = failures
+        st.session_state["network_xlsx_bytes"] = xlsx_bytes
+        st.session_state["network_pdf_bytes"] = pdf_bytes
+
+
+def _render_network_comparison(summaries: list[CompanySummary]) -> None:
+    import pandas as pd
+
+    rows = [{
+        "Company": s.company_name,
+        "Period": f"{s.statement_period_start} – {s.statement_period_end}",
+        "Monthly Burn": float(s.monthly_burn),
+        "Monthly Revenue": float(s.monthly_revenue),
+        "Runway (mo)": s.runway_months,
+        "Revenue Growth": s.revenue_growth,
+        "Active Customers": s.active_customers,
+        "Churn Rate": s.churn_rate,
+        "NRR": s.nrr,
+        "Top Customer Share": s.top_customer_share,
+        "Risk Score": s.composite_risk_score,
+        "Red Flags": s.red_flag_count,
+        "Compliance": s.compliance_status,
+    } for s in summaries]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    import plotly.graph_objects as go
+
+    buckets = {"0-19 (Low)": 0, "20-49 (Medium)": 0, "50+ (High)": 0}
+    for s in summaries:
+        if s.composite_risk_score < 20:
+            buckets["0-19 (Low)"] += 1
+        elif s.composite_risk_score < 50:
+            buckets["20-49 (Medium)"] += 1
+        else:
+            buckets["50+ (High)"] += 1
+    fig = go.Figure(go.Bar(
+        x=list(buckets.keys()), y=list(buckets.values()),
+        marker_color=["#22C55E", "#F59E0B", "#EF4444"],
+    ))
+    fig.update_layout(title="Risk Score Distribution", height=300,
+                       margin={"l": 10, "r": 10, "t": 40, "b": 10})
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_network_mode() -> None:
+    st.title("BSAA · Network Lens")
+    st.caption(
+        "Upload multiple bank statement PDFs to compare portfolio companies "
+        "side by side: burn, runway, risk score, compliance status, and more."
+    )
+
+    uploaded_files = st.file_uploader(
+        "Upload bank statement PDFs (one per company)",
+        type=["pdf"],
+        accept_multiple_files=True,
+        help="Supports HDFC and ICICI digital PDF statements.",
+    )
+
+    if not uploaded_files:
+        st.info("Upload two or more statements to build a comparison workbook.")
+        return
+
+    concurrency = st.slider("Concurrency", 1, 8, 4, key="net_concurrency")
+    run_clicked = st.button("⚡ Run Batch Analysis", type="primary", use_container_width=True)
+
+    if run_clicked:
+        with st.spinner(f"Analysing {len(uploaded_files)} statements…"):
+            _run_network_batch(uploaded_files, concurrency)
+
+    if "network_batch_summary" not in st.session_state:
+        return
+
+    summary = st.session_state["network_batch_summary"]
+    summaries: list[CompanySummary] = st.session_state["network_summaries"]
+    failures: dict[str, str] = st.session_state["network_failures"]
+
+    st.markdown(f"**{summary.succeeded}/{summary.total} statements analysed successfully**")
+
+    if failures:
+        with st.expander(f"⚠️ {len(failures)} statement(s) failed", expanded=False):
+            for name, err in failures.items():
+                st.error(f"**{name}**: {err}")
+
+    if not summaries:
+        st.warning("No statements succeeded — nothing to compare.")
+        return
+
+    _render_network_comparison(summaries)
+
+    st.divider()
+    st.markdown("### Downloads")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.download_button(
+            "⬇ Download Network XLSX", data=st.session_state["network_xlsx_bytes"],
+            file_name="network_lens.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary", use_container_width=True, key="dl_network_xlsx",
+        )
+    with col2:
+        st.download_button(
+            "⬇ Download Cohort Dashboard PDF", data=st.session_state["network_pdf_bytes"],
+            file_name="network_dashboard.pdf", mime="application/pdf",
+            use_container_width=True, key="dl_network_pdf",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    analysis_mode = _render_sidebar_header()
+    if analysis_mode == "Network (multi-company)":
+        _render_network_mode()
+        return
+
     pdf_bytes, source_name, company_name = _sidebar()
 
     st.title("BSAA · Investor Workbench")
@@ -1124,20 +1295,20 @@ def main() -> None:
     compliance_high = result.compliance_report.high_count
     recon_high = result.reconciliation_report.high_count
     st.markdown(
-        f'<div style="margin-bottom:8px;">'
+        '<div style="margin-bottom:8px;">'
         + _badge(f"Validation: {str(status).upper()}", vfg, vbg)
-        + f'&nbsp;&nbsp;'
+        + '&nbsp;&nbsp;'
         + _badge(f"{len(result.doc.transactions)} transactions", "#1E40AF", "#DBEAFE")
-        + f'&nbsp;&nbsp;'
+        + '&nbsp;&nbsp;'
         + _badge(
             f"{len(result.customer_analytics.monthly_active_customers)} months tracked",
             "#6B21A8", "#F3E8FF",
           )
-        + (f'&nbsp;&nbsp;' + _badge(f"{n_rp} related-party txns", "#92400E", "#FEF3C7")
+        + ('&nbsp;&nbsp;' + _badge(f"{n_rp} related-party txns", "#92400E", "#FEF3C7")
            if n_rp else "")
-        + (f'&nbsp;&nbsp;' + _badge(f"{compliance_high} compliance HIGH", "#991B1B", "#FEE2E2")
+        + ('&nbsp;&nbsp;' + _badge(f"{compliance_high} compliance HIGH", "#991B1B", "#FEE2E2")
            if compliance_high else "")
-        + (f'&nbsp;&nbsp;' + _badge(f"{recon_high} recon HIGH", "#991B1B", "#FEE2E2")
+        + ('&nbsp;&nbsp;' + _badge(f"{recon_high} recon HIGH", "#991B1B", "#FEE2E2")
            if recon_high else "")
         + "</div>",
         unsafe_allow_html=True,
