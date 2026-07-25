@@ -20,6 +20,7 @@ class RawRow:
     credit_raw: str | None  # amount string with commas; None if not a credit
     balance_raw: str | None # closing balance string with commas
     ref_no_raw: str | None = None  # Chq./Ref.No. (HDFC) or Ref No./Cheque No. (ICICI)
+    ocr_confidence: float | None = None  # 0-100, set by OCR-based adapters only
 
 
 @dataclass
