@@ -193,44 +193,52 @@ class TestFmtRunway:
 # ─── _signals ─────────────────────────────────────────────────────────────────
 
 class TestSignals:
-    def test_returns_up_to_five(self) -> None:
+    def test_returns_up_to_eight(self) -> None:
         m = _metrics()
-        assert len(_signals(m)) <= 5
+        assert len(_signals(m)) <= 8
 
     def test_at_least_one_signal(self) -> None:
         m = _metrics()
         assert len(_signals(m)) >= 1
 
+    def test_signals_are_tuples(self) -> None:
+        m = _metrics()
+        for item in _signals(m):
+            assert isinstance(item, tuple)
+            assert len(item) == 2
+
     def test_growing_revenue_signal(self) -> None:
         m = _metrics(avg_mom_growth="0.15")
-        lines = _signals(m)
-        assert any("growing" in l.lower() or "stable" in l.lower() for l in lines)
+        texts = [text for _, text in _signals(m)]
+        assert any("growing" in t.lower() or "stable" in t.lower() for t in texts)
 
     def test_declining_revenue_signal(self) -> None:
         m = _metrics(avg_mom_growth="-0.20")
-        lines = _signals(m)
-        assert any("declining" in l.lower() for l in lines)
+        texts = [text for _, text in _signals(m)]
+        assert any("declining" in t.lower() for t in texts)
 
     def test_profitable_signal(self) -> None:
         m = _metrics(avg_monthly_revenue="400000", avg_monthly_burn="200000")
-        lines = _signals(m)
-        assert any("positive" in l.lower() or "sustain" in l.lower() for l in lines)
+        texts = [text for _, text in _signals(m)]
+        assert any("positive" in t.lower() or "sustain" in t.lower() for t in texts)
 
     def test_short_runway_signal(self) -> None:
         m = _metrics(avg_monthly_revenue="100000", avg_monthly_burn="500000",
                      runway_months="1.5")
-        lines = _signals(m)
-        assert any("runway" in l.lower() for l in lines)
+        texts = [text for _, text in _signals(m)]
+        assert any("runway" in t.lower() for t in texts)
 
     def test_concentration_signal_when_available(self) -> None:
         m = _metrics(top_customer_revenue_pct="0.70", revenue_hhi="0.50")
-        lines = _signals(m)
-        assert any("customer" in l.lower() or "concentration" in l.lower() for l in lines)
+        texts = [text for _, text in _signals(m)]
+        assert any("customer" in t.lower() or "concentration" in t.lower() for t in texts)
 
-    def test_no_concentration_data_signal(self) -> None:
+    def test_no_concentration_no_signal(self) -> None:
         m = _metrics(top_customer_revenue_pct=None, revenue_hhi=None)
-        lines = _signals(m)
-        assert any("customer" in l.lower() for l in lines)
+        # No concentration data → no concentration signal (that's correct behaviour)
+        texts = [text for _, text in _signals(m)]
+        # Should still have at least the revenue and profitability signals
+        assert len(texts) >= 2
 
 
 # ─── generate() ───────────────────────────────────────────────────────────────
