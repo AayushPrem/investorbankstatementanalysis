@@ -1,12 +1,15 @@
-"""BSAA — Sprint 3 full-feature demo (Streamlit).
+"""BSAA — full-feature investor workbench demo (Streamlit).
 
 Run:
     streamlit run demo/app.py
 
-Upload an HDFC or ICICI bank statement PDF, *or* generate a synthetic one
-right inside the app.  The full 9-stage pipeline runs and shows financial
-health, risk flags, customer analytics, related parties (auto-detected — no
-manual typing required), and downloads for Angel Lens PDF and VC Lens XLSX/PDF.
+Single Company mode: upload an HDFC or ICICI bank statement PDF, or generate
+a synthetic one right inside the app. Shows financial health, risk flags,
+customer analytics, related parties (auto-detected), Indian compliance, and
+pitch-deck reconciliation, with Angel/VC/Workbench report downloads.
+
+Network mode: upload multiple statements, or generate a synthetic cohort, to
+compare portfolio companies side by side via the Network Lens.
 """
 from __future__ import annotations
 
@@ -37,11 +40,84 @@ from schema.canonical import StatementDocument
 # ─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="BSAA · VC Lens",
+    page_title="BSAA · Investor Workbench",
     page_icon="🏦",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def _inject_theme_css() -> None:
+    st.markdown(
+        """
+        <style>
+        .block-container { padding-top: 2rem; padding-bottom: 3rem; max-width: 1200px; }
+        footer { visibility: hidden; }
+        #MainMenu { visibility: hidden; }
+
+        h1, h2, h3 { color: #1F3864; letter-spacing: -0.01em; }
+        h1 { font-weight: 700; }
+
+        section[data-testid="stSidebar"] {
+            background: #F4F6FA;
+            border-right: 1px solid #E2E8F0;
+        }
+        section[data-testid="stSidebar"] .stRadio label p { font-weight: 600; }
+
+        .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+        .stTabs [data-baseweb="tab"] {
+            height: 46px;
+            padding: 0 18px;
+            border-radius: 8px 8px 0 0;
+            font-weight: 600;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #EEF2FB;
+            color: #1F3864 !important;
+        }
+
+        .stButton > button, .stDownloadButton > button {
+            border-radius: 8px;
+            font-weight: 600;
+        }
+
+        [data-testid="stMetricValue"] { font-size: 1.5rem; color: #1F3864; }
+        [data-testid="stMetricLabel"] { font-weight: 600; color: #6B7280; }
+
+        .bsaa-hero {
+            background: linear-gradient(135deg, #1F3864 0%, #2E4E8F 100%);
+            border-radius: 14px;
+            padding: 28px 32px;
+            margin-bottom: 22px;
+            color: white;
+        }
+        .bsaa-hero h1 { color: white; margin: 0; font-size: 1.9rem; font-weight: 700; }
+        .bsaa-hero p { color: #C9D6EE; margin: 8px 0 0 0; font-size: 1rem; }
+
+        .bsaa-eyebrow {
+            display: inline-block; text-transform: uppercase; letter-spacing: 0.08em;
+            font-size: 0.72rem; font-weight: 700; color: #93A6CC; margin-bottom: 4px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _hero(title: str, subtitle: str, eyebrow: str = "BSAA") -> None:
+    st.markdown(
+        f"""
+        <div class="bsaa-hero">
+            <span class="bsaa-eyebrow">{eyebrow}</span>
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+_inject_theme_css()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Colour palette
@@ -140,8 +216,12 @@ def _inr(v: float) -> str:
 def _render_sidebar_header() -> str:
     """Render the BSAA header + top-level analysis-mode switch. Returns the mode."""
     with st.sidebar:
-        st.markdown("## 🏦 BSAA")
-        st.caption("Bank Statement Analysis Agent · Sprint 4")
+        st.markdown(
+            '<div style="font-size:1.5rem;font-weight:800;color:#1F3864;">🏦 BSAA</div>'
+            '<div style="color:#6B7280;font-size:0.82rem;margin-bottom:14px;">'
+            'Agentic Bank Statement Analysis</div>',
+            unsafe_allow_html=True,
+        )
         analysis_mode = st.radio(
             "Analysis mode",
             ["Single Company", "Network (multi-company)"],
@@ -268,15 +348,17 @@ def _sidebar() -> tuple[bytes | None, str, str]:
 
         # ── Pipeline info ────────────────────────────────────────────────────
         st.divider()
-        st.markdown(
-            "**Banks supported**\n- HDFC Bank\n- ICICI Bank\n\n"
-            "**11-stage pipeline (Sprint 3)**\n"
-            "1. PDF extraction\n2. Normalisation\n3. Validation\n"
-            "4. Categorisation v2\n5. Related-party tagging\n"
-            "6. Customer identity\n7. Risk analysis\n"
-            "8. Customer analytics\n9. Compliance (India)\n"
-            "10. Reconciliation\n11. Report generation"
-        )
+        with st.expander("ℹ️ How this works", expanded=False):
+            st.caption("**Banks supported:** HDFC · ICICI")
+            st.caption(
+                "**Pipeline:** extraction → validation → categorisation → "
+                "related-party tagging → customer identity → risk analysis → "
+                "customer analytics → compliance (India) → reconciliation → reports"
+            )
+            st.caption(
+                "**Reports:** every run produces an Angel Lens PDF, VC Lens "
+                "XLSX/PDF, and Workbench XLSX/PDF — all downloadable below."
+            )
 
     return pdf_bytes, source_name, company_name
 
@@ -425,26 +507,27 @@ def _render_verdict_banner(result: DemoResult) -> None:
 def _render_kpi_row(result: DemoResult) -> None:
     m  = result.metrics
     ca = result.customer_analytics
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    with c1:
-        st.metric("Total Revenue", _fmt_amount(m.total_revenue))
-    with c2:
-        st.metric("Avg Monthly Burn", _fmt_amount(m.avg_monthly_burn) + "/mo")
-    with c3:
-        st.metric("Runway", _fmt_runway(m.runway_months))
-    with c4:
-        growth = m.avg_mom_growth
-        delta = f"{float(growth)*100:+.1f}%" if growth is not None else None
-        st.metric("MoM Growth", _fmt_growth(growth), delta=delta)
-    with c5:
-        active_counts = list(ca.monthly_active_customers.values())
-        st.metric("Active Customers", active_counts[-1] if active_counts else 0)
-    with c6:
-        nrr_vals = list(ca.nrr_per_month.values())
-        nrr = nrr_vals[-1] if nrr_vals else None
-        nrr_str = f"{nrr*100:.0f}%" if nrr else "N/A"
-        delta_nrr = f"{(nrr-1)*100:+.0f}%" if nrr is not None else None
-        st.metric("Latest NRR", nrr_str, delta=delta_nrr)
+    with st.container(border=True):
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        with c1:
+            st.metric("Total Revenue", _fmt_amount(m.total_revenue))
+        with c2:
+            st.metric("Avg Monthly Burn", _fmt_amount(m.avg_monthly_burn) + "/mo")
+        with c3:
+            st.metric("Runway", _fmt_runway(m.runway_months))
+        with c4:
+            growth = m.avg_mom_growth
+            delta = f"{float(growth)*100:+.1f}%" if growth is not None else None
+            st.metric("MoM Growth", _fmt_growth(growth), delta=delta)
+        with c5:
+            active_counts = list(ca.monthly_active_customers.values())
+            st.metric("Active Customers", active_counts[-1] if active_counts else 0)
+        with c6:
+            nrr_vals = list(ca.nrr_per_month.values())
+            nrr = nrr_vals[-1] if nrr_vals else None
+            nrr_str = f"{nrr*100:.0f}%" if nrr else "N/A"
+            delta_nrr = f"{(nrr-1)*100:+.0f}%" if nrr is not None else None
+            st.metric("Latest NRR", nrr_str, delta=delta_nrr)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -967,7 +1050,7 @@ def _render_tab_downloads(result: DemoResult) -> None:
     )
 
     st.divider()
-    st.markdown("### Workbench Lens — 10-sheet XLSX (Sprint 3)")
+    st.markdown("### Workbench Lens — 10-sheet XLSX")
     st.caption(
         "Deepest institutional workbook: Executive Summary · Financial Health · Risk Flags · "
         "Customer Analytics · Compliance Findings · Reconciliation · All Transactions · "
@@ -983,7 +1066,7 @@ def _render_tab_downloads(result: DemoResult) -> None:
     )
 
     st.divider()
-    st.markdown("### Workbench Lens — 4-page PDF Summary (Sprint 3)")
+    st.markdown("### Workbench Lens — 4-page PDF Summary")
     st.caption("Four-page PDF: Financial, Compliance, Reconciliation, Customer Analytics.")
     st.download_button(
         label="⬇ Download Workbench PDF",
@@ -998,70 +1081,97 @@ def _render_tab_downloads(result: DemoResult) -> None:
 # Landing page (shown when no statement is loaded)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_landing() -> None:
-    st.markdown("---")
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown("### 📤 Upload or Generate")
-        st.markdown(
-            "Upload an HDFC/ICICI PDF *or* generate a synthetic statement "
-            "right inside the app — 5 company profiles, variable length, "
-            "realistic risk flags."
-        )
-    with c2:
-        st.markdown("### ⚡ Analyse")
-        st.markdown(
-            "9-stage pipeline: extraction → normalisation → validation → "
-            "categorisation → related-party tagging → customer identity → "
-            "risk analysis → customer analytics."
-        )
-    with c3:
-        st.markdown("### 🚩 Risk")
-        st.markdown(
-            "Six automated red-flag detectors: structuring, round-tripping, "
-            "revenue spikes/drains, customer concentration, round amounts, "
-            "founder over-extraction."
-        )
-    with c4:
-        st.markdown("### 📊 Reports")
-        st.markdown(
-            "Angel Lens 1-page PDF + VC Lens 6-sheet XLSX with cohort retention, "
-            "NRR, concentration trajectory, and full transaction ledger."
-        )
+_LENS_CARDS = [
+    ("👼", "Angel Lens", "1-page PDF", "Verdict, KPIs, runway gauge, and the top health "
+     "signals — the quick read for an individual angel investor."),
+    ("💼", "VC Lens", "6-sheet XLSX + 3-page PDF", "Financial health, risk flags, customer "
+     "analytics, full transaction ledger, and related parties, with a composite risk score."),
+    ("🏛️", "Workbench Lens", "10-sheet XLSX + 4-page PDF", "The deepest view: everything in "
+     "VC Lens plus compliance, reconciliation, customer master, raw data export, and "
+     "fund-specific custom detectors."),
+    ("🌐", "Network Lens", "Comparison XLSX + PDF", "Compare many portfolio companies side "
+     "by side — sortable table, risk distribution, sector breakdown, cohort dashboard."),
+]
 
-    st.markdown("---")
-    st.markdown("#### Sprint 2 capabilities")
-    cols = st.columns(3)
-    features = [
-        ("Synthetic Generator", "5 profiles, 2 banks, 3–24 months, probabilistic risk flags, real company names"),
-        ("Related-Party Auto-Detection", "Counterparties extracted from narrations; mark affiliates with multi-select"),
-        ("Customer Identity Resolver", "Semantic deduplication with sentence-transformers"),
-        ("Risk / Red-Flag Analyst", "Six detectors, composite 0–100 score, narrative"),
-        ("Customer Analytics", "Churn (3-month silence), NRR, cohort retention, concentration"),
-        ("VC Lens Report", "6-sheet XLSX + 3-page PDF with conditional formatting"),
+
+def _render_landing() -> None:
+    st.info(
+        "👈 **Get started in the sidebar** — upload a bank statement PDF, or generate a "
+        "synthetic one right here in the app. Every input path works for every report below."
+    )
+
+    st.markdown("#### One pipeline, four investor-ready reports")
+    st.caption(
+        "Analyse a statement once — every lens below is generated from the same run, and "
+        "every lens supports **both** uploading a real statement and generating a synthetic "
+        "one (Network Lens included, via its own mode in the sidebar)."
+    )
+
+    cols = st.columns(4)
+    for col, (icon, name, fmt, desc) in zip(cols, _LENS_CARDS):
+        with col, st.container(border=True):
+            st.markdown(f"### {icon} {name}")
+            st.caption(fmt)
+            st.markdown(desc)
+
+    st.markdown("")
+    st.markdown("#### How it works")
+    step_cols = st.columns(4)
+    steps = [
+        ("1 · Get a statement", "Upload an HDFC/ICICI PDF, or generate a realistic synthetic "
+         "one — 5 company profiles, 3–24 months, injectable risk flags."),
+        ("2 · Analyse", "Extraction → validation → categorisation → related-party tagging → "
+         "customer identity → risk → customer analytics → compliance → reconciliation."),
+        ("3 · Review", "Verdict banner, KPIs, six automated red-flag detectors, Indian "
+         "regulatory compliance checks, and pitch-deck reconciliation."),
+        ("4 · Export", "Download the Angel, VC, and Workbench reports for this company — or "
+         "switch to Network mode to compare a whole cohort at once."),
     ]
-    for i, (title, desc) in enumerate(features):
-        with cols[i % 3]:
+    for col, (title, desc) in zip(step_cols, steps):
+        with col:
             st.markdown(f"**{title}**")
             st.caption(desc)
-            st.markdown("")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Network mode — multi-company batch analysis (Sprint 4)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _run_network_batch(uploaded_files: list, concurrency: int) -> None:
-    """Write uploaded files to disk, run the batch pipeline, build the network
-    lens, and stash everything needed to render it in st.session_state.
+def _generate_synthetic_cohort(
+    count: int, risk_mode: str, n_months: int, seed_base: int | None,
+) -> list[tuple[str, bytes]]:
+    """Generate *count* synthetic statements cycling through the 5 company
+    profiles and both banks, for the Network Lens "generate cohort" path.
+    """
+    from tools.synthetic_gen import generate_statement_to_bytes
+
+    profiles = list(_PROFILE_LABELS)
+    banks = ["hdfc", "icici"]
+    files: list[tuple[str, bytes]] = []
+    for i in range(count):
+        profile = profiles[i % len(profiles)]
+        bank = banks[i % len(banks)]
+        seed = (seed_base + i) if seed_base is not None else None
+        pdf_bytes, company_name, _injected = generate_statement_to_bytes(
+            bank=bank, profile=profile, flags=None, risk_mode=risk_mode,
+            n_months=n_months, seed=seed,
+        )
+        safe_name = (company_name or f"company_{i + 1}").replace(" ", "_").replace("/", "-")
+        files.append((f"{safe_name}.pdf", pdf_bytes))
+    return files
+
+
+def _run_network_batch(files: list[tuple[str, bytes]], concurrency: int) -> None:
+    """Write statement files to disk, run the batch pipeline, build the
+    network lens, and stash everything needed to render it in st.session_state.
     """
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         inputs: list[BatchInput] = []
-        for f in uploaded_files:
-            file_path = tmp_path / f.name
-            file_path.write_bytes(f.read())
-            inputs.append(BatchInput(path=str(file_path), company_name=Path(f.name).stem))
+        for name, content in files:
+            file_path = tmp_path / name
+            file_path.write_bytes(content)
+            inputs.append(BatchInput(path=str(file_path), company_name=Path(name).stem))
 
         progress_bar = st.progress(0.0, text="Starting batch…")
         done = {"count": 0}
@@ -1140,30 +1250,83 @@ def _render_network_comparison(summaries: list[CompanySummary]) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
+def _render_network_source() -> list[tuple[str, bytes]]:
+    """Render the Network Lens input controls (upload or generate). Returns
+    the list of (filename, pdf_bytes) statements ready for batch analysis.
+    """
+    source_mode = st.radio(
+        "Statement source",
+        ["📤 Upload PDFs", "🏗️ Generate Synthetic Cohort"],
+        horizontal=True,
+        key="net_source_mode",
+    )
+
+    if source_mode == "📤 Upload PDFs":
+        uploaded_files = st.file_uploader(
+            "Upload bank statement PDFs (one per company)",
+            type=["pdf"],
+            accept_multiple_files=True,
+            help="Supports HDFC and ICICI digital PDF statements.",
+        )
+        return [(f.name, f.read()) for f in uploaded_files] if uploaded_files else []
+
+    with st.container(border=True):
+        st.markdown("##### Cohort generator")
+        st.caption(
+            "Generates a mix of synthetic companies across all 5 profiles and both banks — "
+            "no real statements needed to try the Network Lens."
+        )
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            count = st.slider("Number of companies", 2, 10, 4, key="net_gen_count")
+        with col2:
+            n_months = st.slider("Duration (months)", 3, 24, 6, key="net_gen_months")
+        with col3:
+            risk_mode = st.selectbox(
+                "Risk profile", ["realistic", "clean"],
+                format_func=lambda m: {
+                    "realistic": "Realistic (mixed flags)", "clean": "Clean (no flags)",
+                }[m],
+                key="net_gen_risk",
+            )
+        use_seed = st.checkbox("Fix random seed (reproducible)", key="net_gen_use_seed")
+        seed_val = (
+            st.number_input("Seed", value=42, step=1, key="net_gen_seed") if use_seed else None
+        )
+
+        if st.button("🏗️ Generate Cohort", type="primary", use_container_width=True):
+            with st.spinner(f"Generating {count} synthetic statements…"):
+                st.session_state["net_gen_files"] = _generate_synthetic_cohort(
+                    count, risk_mode, n_months, int(seed_val) if seed_val is not None else None,
+                )
+            st.session_state.pop("network_batch_summary", None)
+
+    files = st.session_state.get("net_gen_files", [])
+    if files:
+        st.success(f"Generated {len(files)} statement(s): " + ", ".join(n for n, _ in files))
+    return files
+
+
 def _render_network_mode() -> None:
-    st.title("BSAA · Network Lens")
-    st.caption(
-        "Upload multiple bank statement PDFs to compare portfolio companies "
-        "side by side: burn, runway, risk score, compliance status, and more."
+    _hero(
+        "Network Lens",
+        "Compare portfolio companies side by side: burn, runway, risk score, compliance "
+        "status, and more — from uploaded statements or a generated synthetic cohort.",
     )
 
-    uploaded_files = st.file_uploader(
-        "Upload bank statement PDFs (one per company)",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="Supports HDFC and ICICI digital PDF statements.",
-    )
+    files = _render_network_source()
 
-    if not uploaded_files:
-        st.info("Upload two or more statements to build a comparison workbook.")
+    if len(files) < 2:
+        st.info("Add at least two statements — upload PDFs or generate a synthetic cohort — "
+                 "to build a comparison workbook.")
         return
 
     concurrency = st.slider("Concurrency", 1, 8, 4, key="net_concurrency")
     run_clicked = st.button("⚡ Run Batch Analysis", type="primary", use_container_width=True)
 
     if run_clicked:
-        with st.spinner(f"Analysing {len(uploaded_files)} statements…"):
-            _run_network_batch(uploaded_files, concurrency)
+        with st.spinner(f"Analysing {len(files)} statements…"):
+            _run_network_batch(files, concurrency)
 
     if "network_batch_summary" not in st.session_state:
         return
@@ -1215,15 +1378,14 @@ def main() -> None:
 
     pdf_bytes, source_name, company_name = _sidebar()
 
-    st.title("BSAA · Investor Workbench")
-    st.caption(
-        "Upload an HDFC or ICICI bank statement — or generate a synthetic one — "
-        "for a full Sprint 3 analysis: financial health, risk flags, customer analytics, "
-        "Indian compliance, pitch-deck reconciliation, and downloadable investor reports."
+    _hero(
+        "Investor Workbench",
+        "Upload an HDFC or ICICI bank statement — or generate a synthetic one — for "
+        "financial health, risk flags, customer analytics, Indian compliance, pitch-deck "
+        "reconciliation, and four downloadable investor reports.",
     )
 
     if pdf_bytes is None:
-        st.info("Upload a PDF or generate a synthetic statement in the sidebar to begin.")
         _render_landing()
         return
 

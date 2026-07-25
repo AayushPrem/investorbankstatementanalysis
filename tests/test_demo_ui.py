@@ -39,7 +39,7 @@ class TestNetworkMode:
         at.sidebar.radio[0].set_value("Network (multi-company)")
         at.run()
         assert not at.exception
-        assert any("Upload two or more statements" in i.value for i in at.info)
+        assert any("Add at least two statements" in i.value for i in at.info)
 
     def test_batch_upload_and_run_produces_comparison_and_downloads(
         self, synthetic_pdfs: list[tuple[str, bytes, str]]
@@ -62,6 +62,36 @@ class TestNetworkMode:
         assert "network_pdf_bytes" in at.session_state
         assert at.session_state["network_xlsx_bytes"][:2] == b"PK"
         assert at.session_state["network_pdf_bytes"][:4] == b"%PDF"
+
+    def test_generate_synthetic_cohort_and_run(self) -> None:
+        at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at.sidebar.radio[0].set_value("Network (multi-company)")
+        at.run()
+
+        source_radio = next(r for r in at.radio if "🏗️ Generate Synthetic Cohort" in r.options)
+        source_radio.set_value("🏗️ Generate Synthetic Cohort")
+        at.run()
+        assert not at.exception
+
+        count_slider = next(s for s in at.slider if s.label == "Number of companies")
+        count_slider.set_value(3)
+        at.run()
+
+        gen_btn = next(b for b in at.button if "Generate Cohort" in b.label)
+        gen_btn.click()
+        at.run()
+
+        assert not at.exception
+        assert any("Generated 3 statement" in s.value for s in at.success)
+
+        run_btn = next(b for b in at.button if "Run Batch Analysis" in b.label)
+        run_btn.click()
+        at.run()
+
+        assert not at.exception
+        assert any("3/3 statements analysed successfully" in m.value for m in at.markdown)
+        assert "network_xlsx_bytes" in at.session_state
+        assert "network_pdf_bytes" in at.session_state
 
 
 class TestSingleCompanyModeUnchanged:
