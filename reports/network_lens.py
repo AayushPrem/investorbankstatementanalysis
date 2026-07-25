@@ -3,9 +3,10 @@ networks (Sprint 4, Step 4.1).
 
 Unlike the other three lenses (which drill into one company), this one
 takes a *list* of already-analysed companies and produces a sortable
-comparison table plus a cohort-level dashboard — it never touches individual
-transactions, only the summary metrics each company's pipeline run already
-produced.
+comparison table, the actual risk/compliance detail behind each company's
+counts, a portfolio-level narrative, and a cohort-level dashboard — it never
+touches individual transactions, only the summary metrics each company's
+pipeline run already produced.
 
 Usage:
     from reports.network_lens import CompanySummary, NetworkLensReport, build_company_summary
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import datetime
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -35,6 +36,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
     HRFlowable,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -57,6 +59,26 @@ _ZERO = Decimal("0")
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
+class FlagDetail:
+    """One risk flag, carried through to the Network Lens detail sheet/UI —
+    a lightweight copy of analysis.risk.Flag so this module stays decoupled
+    from the analysis layer's types (TYPE_CHECKING-only import above).
+    """
+    severity: str
+    detector_name: str
+    description: str
+
+
+@dataclass
+class ComplianceDetail:
+    """One compliance exception, carried through to the Network Lens."""
+    severity: str
+    rule_name: str
+    regulatory_citation: str
+    description: str
+
+
+@dataclass
 class CompanySummary:
     """One row's worth of cross-company comparison data."""
     company_name: str
@@ -73,6 +95,8 @@ class CompanySummary:
     composite_risk_score: float        # 0-100
     red_flag_count: int
     compliance_status: str             # "clean" | "warnings" | "violations"
+    risk_flags: list[FlagDetail] = field(default_factory=list)
+    compliance_exceptions: list[ComplianceDetail] = field(default_factory=list)
     sector: str | None = None
     detail_report_path: str | None = None  # optional link target for Sheet 4
 
@@ -110,6 +134,21 @@ def build_company_summary(
     else:
         compliance_status = "clean"
 
+    risk_flags = [
+        FlagDetail(severity=str(f.severity), detector_name=f.detector_name, description=f.description)
+        for f in risk_report.flags
+    ]
+    compliance_exceptions = (
+        [
+            ComplianceDetail(
+                severity=str(e.severity), rule_name=e.rule_name,
+                regulatory_citation=e.regulatory_citation, description=e.description,
+            )
+            for e in compliance_report.exceptions
+        ]
+        if compliance_report is not None else []
+    )
+
     return CompanySummary(
         company_name=company_name,
         statement_period_start=doc.statement_period_start,
@@ -125,9 +164,30 @@ def build_company_summary(
         composite_risk_score=risk_report.composite_score,
         red_flag_count=len(risk_report.flags),
         compliance_status=compliance_status,
+        risk_flags=risk_flags,
+        compliance_exceptions=compliance_exceptions,
         sector=sector,
         detail_report_path=detail_report_path,
     )
+
+
+def build_portfolio_narrative(summaries: list[CompanySummary], llm_enabled: bool = True) -> str:
+    """Cross-company narrative for the cohort — see analysis.portfolio_narrative."""
+    from analysis.portfolio_narrative import PortfolioCompany, generate_portfolio_narrative
+
+    companies = [
+        PortfolioCompany(
+            name=s.company_name,
+            risk_score=s.composite_risk_score,
+            red_flag_descriptions=[f.description for f in s.risk_flags],
+            compliance_status=s.compliance_status,
+            compliance_rule_names=[c.rule_name for c in s.compliance_exceptions],
+            runway_months=s.runway_months,
+            churn_rate=s.churn_rate,
+        )
+        for s in summaries
+    ]
+    return generate_portfolio_narrative(companies, llm_enabled=llm_enabled)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +220,7 @@ _THIN = Border(
     top=Side(style="thin"), bottom=Side(style="thin"),
 )
 _CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+_LEFT_WRAP = Alignment(horizontal="left", vertical="top", wrap_text=True)
 
 
 def _risk_fill(score: float) -> PatternFill:
@@ -172,6 +233,15 @@ def _risk_fill(score: float) -> PatternFill:
 
 def _compliance_fill(status: str) -> PatternFill:
     return {"violations": _RED, "warnings": _AMBER, "clean": _GREEN}.get(status, PatternFill())
+
+
+def _severity_fill(severity: str) -> PatternFill:
+    s = severity.upper()
+    if "HIGH" in s:
+        return _RED
+    if "MEDIUM" in s:
+        return _AMBER
+    return _GREEN
 
 
 def _autowidth(ws: Worksheet, min_w: int = 10, max_w: int = 40) -> None:
@@ -233,7 +303,76 @@ def _sheet_comparison(wb: Workbook, summaries: list[CompanySummary]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sheet 2 — Risk distribution
+# Sheet 2 — Risk & compliance detail (the actual substance behind the counts)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DETAIL_COLUMNS = ["Company", "Type", "Severity", "Item", "Detail"]
+
+
+def _sheet_risk_compliance_detail(
+    wb: Workbook, summaries: list[CompanySummary], narrative: str,
+) -> None:
+    ws = wb.create_sheet("Risk & Compliance Detail")
+
+    ws.merge_cells("A1:E1")
+    ws["A1"] = "PORTFOLIO NARRATIVE"
+    ws["A1"].font = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
+    ws["A1"].fill = _NAVY
+
+    ws.merge_cells("A2:E4")
+    narrative_cell = ws["A2"]
+    narrative_cell.value = narrative
+    narrative_cell.alignment = Alignment(wrap_text=True, vertical="top")
+    narrative_cell.font = _BODY_FONT
+
+    row = 6
+    for c, name in enumerate(_DETAIL_COLUMNS, 1):
+        cell = ws.cell(row=row, column=c, value=name)
+        cell.font = _HEADER_FONT
+        cell.fill = _NAVY
+        cell.border = _THIN
+        cell.alignment = _CENTER
+    row += 1
+
+    has_detail = False
+    for s in summaries:
+        for f in s.risk_flags:
+            has_detail = True
+            fill = _severity_fill(f.severity)
+            values = [s.company_name, "Risk Flag", f.severity, f.detector_name, f.description]
+            for c, val in enumerate(values, 1):
+                cell = ws.cell(row=row, column=c, value=val)
+                cell.font = _BODY_FONT
+                cell.border = _THIN
+                cell.alignment = _LEFT_WRAP if c == 5 else None
+                if c == 3:
+                    cell.fill = fill
+            row += 1
+        for e in s.compliance_exceptions:
+            has_detail = True
+            fill = _severity_fill(e.severity)
+            values = [
+                s.company_name, "Compliance", e.severity,
+                f"{e.rule_name} ({e.regulatory_citation})", e.description,
+            ]
+            for c, val in enumerate(values, 1):
+                cell = ws.cell(row=row, column=c, value=val)
+                cell.font = _BODY_FONT
+                cell.border = _THIN
+                cell.alignment = _LEFT_WRAP if c == 5 else None
+                if c == 3:
+                    cell.fill = fill
+            row += 1
+
+    if not has_detail:
+        ws.cell(row=row, column=1,
+                value="No risk flags or compliance exceptions detected across the cohort.").font = _BODY_FONT
+
+    _autowidth(ws, max_w=60)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sheet 3 — Risk distribution
 # ─────────────────────────────────────────────────────────────────────────────
 
 _RISK_BUCKETS = [(0, 20, "0-19 (Low)"), (20, 50, "20-49 (Medium)"), (50, 101, "50+ (High)")]
@@ -257,7 +396,7 @@ def _sheet_risk_distribution(wb: Workbook, summaries: list[CompanySummary]) -> N
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sheet 3 — Sector breakdown
+# Sheet 4 — Sector breakdown
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _sheet_sector_breakdown(wb: Workbook, summaries: list[CompanySummary]) -> None:
@@ -285,7 +424,7 @@ def _sheet_sector_breakdown(wb: Workbook, summaries: list[CompanySummary]) -> No
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sheet 4 — Individual company links
+# Sheet 5 — Individual company links
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _sheet_company_links(wb: Workbook, summaries: list[CompanySummary]) -> None:
@@ -321,7 +460,7 @@ def _percentile(values: list[float], pct: float) -> float:
     return ordered[idx]
 
 
-def _build_dashboard_pdf(summaries: list[CompanySummary]) -> bytes:
+def _build_dashboard_pdf(summaries: list[CompanySummary], narrative: str) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
         buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
@@ -347,6 +486,10 @@ def _build_dashboard_pdf(summaries: list[CompanySummary]) -> bytes:
         story.append(Paragraph("No companies in this cohort.", styles["body"]))
         doc.build(story)
         return buf.getvalue()
+
+    story.append(Paragraph("Portfolio Narrative", styles["h2"]))
+    story.append(Paragraph(narrative, styles["body"]))
+    story.append(Spacer(1, 4 * mm))
 
     burns = [float(s.monthly_burn) for s in summaries]
     runways = [s.runway_months for s in summaries if s.runway_months is not None]
@@ -417,6 +560,30 @@ def _build_dashboard_pdf(summaries: list[CompanySummary]) -> bytes:
     ]))
     story.append(out_tbl)
 
+    companies_with_detail = [s for s in summaries if s.risk_flags or s.compliance_exceptions]
+    if companies_with_detail:
+        story.append(PageBreak())
+        story.append(Paragraph("Risk & Compliance Detail", styles["h1"]))
+        story.append(HRFlowable(width="100%", thickness=1, color=navy))
+        story.append(Spacer(1, 4 * mm))
+        for s in companies_with_detail:
+            story.append(Paragraph(
+                f"{s.company_name} — risk {s.composite_risk_score:.0f}/100, "
+                f"compliance: {s.compliance_status}",
+                styles["h2"],
+            ))
+            for f in s.risk_flags:
+                story.append(Paragraph(
+                    f"<b>[{f.severity}] {f.detector_name}</b> — {f.description}", styles["body"],
+                ))
+            for e in s.compliance_exceptions:
+                story.append(Paragraph(
+                    f"<b>[{e.severity}] {e.rule_name}</b> ({e.regulatory_citation}) — "
+                    f"{e.description}",
+                    styles["body"],
+                ))
+            story.append(Spacer(1, 3 * mm))
+
     doc.build(story)
     return buf.getvalue()
 
@@ -426,12 +593,33 @@ def _build_dashboard_pdf(summaries: list[CompanySummary]) -> bytes:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class NetworkLensReport:
-    """Cross-company comparison workbook + 1-page cohort dashboard PDF."""
+    """Cross-company comparison workbook + cohort dashboard PDF.
 
-    def generate(self, summaries: list[CompanySummary]) -> tuple[bytes, bytes]:
-        """Returns (xlsx_bytes, pdf_bytes)."""
+    Beyond the sortable comparison table, this surfaces the actual risk
+    flags and compliance exceptions behind each company's counts (Sheet 2 /
+    PDF page 2) and a portfolio-level narrative synthesised across the whole
+    cohort — via Claude Haiku when ANTHROPIC_API_KEY is set, falling back to
+    a rule-based summary otherwise (see analysis.portfolio_narrative).
+    """
+
+    def generate(
+        self,
+        summaries: list[CompanySummary],
+        llm_enabled: bool = True,
+        narrative: str | None = None,
+    ) -> tuple[bytes, bytes]:
+        """Returns (xlsx_bytes, pdf_bytes).
+
+        Pass a pre-computed *narrative* (e.g. from calling
+        build_portfolio_narrative() once to also display in a UI) to avoid a
+        second LLM round-trip; otherwise one is generated here.
+        """
+        if narrative is None:
+            narrative = build_portfolio_narrative(summaries, llm_enabled=llm_enabled)
+
         wb = Workbook()
         _sheet_comparison(wb, summaries)
+        _sheet_risk_compliance_detail(wb, summaries, narrative)
         _sheet_risk_distribution(wb, summaries)
         _sheet_sector_breakdown(wb, summaries)
         _sheet_company_links(wb, summaries)
@@ -440,5 +628,5 @@ class NetworkLensReport:
         wb.save(buf)
         xlsx_bytes = buf.getvalue()
 
-        pdf_bytes = _build_dashboard_pdf(summaries)
+        pdf_bytes = _build_dashboard_pdf(summaries, narrative)
         return xlsx_bytes, pdf_bytes

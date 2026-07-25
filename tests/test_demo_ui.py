@@ -63,6 +63,31 @@ class TestNetworkMode:
         assert at.session_state["network_xlsx_bytes"][:2] == b"PK"
         assert at.session_state["network_pdf_bytes"][:4] == b"%PDF"
 
+    def test_portfolio_narrative_and_flag_detail_are_shown(
+        self, synthetic_pdfs: list[tuple[str, bytes, str]]
+    ) -> None:
+        at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at.sidebar.radio[0].set_value("Network (multi-company)")
+        at.run()
+
+        at.file_uploader[0].set_value(synthetic_pdfs)
+        at.run()
+
+        run_btn = next(b for b in at.button if "Run Batch Analysis" in b.label)
+        run_btn.click()
+        at.run()
+
+        assert not at.exception
+        # Narrative is a non-trivial generated sentence, not just a stub
+        assert "network_narrative" in at.session_state
+        narrative = at.session_state["network_narrative"]
+        assert isinstance(narrative, str) and len(narrative) > 20
+        assert any(narrative in i.value for i in at.info)
+
+        # The "Risk & Compliance Detail" tab should render without exploding,
+        # whether or not this particular synthetic cohort tripped any flags.
+        assert len(at.tabs) == 3
+
     def test_generate_synthetic_cohort_and_run(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
         at.sidebar.radio[0].set_value("Network (multi-company)")

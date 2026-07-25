@@ -125,7 +125,10 @@ class TestNetworkLensReport:
         xlsx_bytes, pdf_bytes = NetworkLensReport().generate(summaries)
         assert pdf_bytes.startswith(b"%PDF")
         wb = load_workbook(BytesIO(xlsx_bytes))
-        assert wb.sheetnames == ["Comparison", "Risk Distribution", "Sector Breakdown", "Company Reports"]
+        assert wb.sheetnames == [
+            "Comparison", "Risk & Compliance Detail", "Risk Distribution",
+            "Sector Breakdown", "Company Reports",
+        ]
 
     def test_comparison_sheet_has_one_row_per_company(self) -> None:
         summaries = [_summary("Acme"), _summary("Beta"), _summary("Gamma")]
@@ -184,14 +187,81 @@ class TestNetworkLensReport:
         wb = load_workbook(BytesIO(xlsx_bytes))
         assert wb["Comparison"].max_row == 1  # header only
 
+    def test_detail_sheet_contains_narrative_and_flag_rows(self) -> None:
+        summaries = [_summary("Acme", risk=60)]  # _summary() gives it 1 HIGH-severity flag
+        xlsx_bytes, _ = NetworkLensReport().generate(summaries)
+        wb = load_workbook(BytesIO(xlsx_bytes))
+        ws = wb["Risk & Compliance Detail"]
+
+        assert ws["A1"].value == "PORTFOLIO NARRATIVE"
+        assert isinstance(ws["A2"].value, str) and len(ws["A2"].value) > 0
+
+        detail_rows = [
+            [ws.cell(row=r, column=c).value for c in range(1, 6)]
+            for r in range(7, ws.max_row + 1)
+        ]
+        assert any(row[0] == "Acme" and row[1] == "Risk Flag" for row in detail_rows)
+
+    def test_detail_sheet_contains_compliance_rows(self) -> None:
+        summaries = [_summary("Acme", high_compliance=1)]
+        xlsx_bytes, _ = NetworkLensReport().generate(summaries)
+        wb = load_workbook(BytesIO(xlsx_bytes))
+        ws = wb["Risk & Compliance Detail"]
+
+        detail_rows = [
+            [ws.cell(row=r, column=c).value for c in range(1, 6)]
+            for r in range(7, ws.max_row + 1)
+        ]
+        assert any(row[1] == "Compliance" and "269ST" in str(row[3]) for row in detail_rows)
+
+    def test_detail_sheet_placeholder_when_no_flags(self) -> None:
+        from reports.network_lens import CompanySummary
+
+        clean = CompanySummary(
+            company_name="CleanCo", statement_period_start=_DATE_START,
+            statement_period_end=_DATE_END, monthly_burn=Decimal("100000"),
+            monthly_revenue=Decimal("200000"), runway_months=12.0, revenue_growth=0.05,
+            active_customers=10, churn_rate=0.0, nrr=1.0, top_customer_share=0.2,
+            composite_risk_score=0.0, red_flag_count=0, compliance_status="clean",
+        )
+        xlsx_bytes, _ = NetworkLensReport().generate([clean])
+        wb = load_workbook(BytesIO(xlsx_bytes))
+        ws = wb["Risk & Compliance Detail"]
+        assert "No risk flags or compliance exceptions" in str(ws.cell(row=7, column=1).value)
+
+
+class TestBuildPortfolioNarrative:
+    def test_returns_non_empty_string(self) -> None:
+        from reports.network_lens import build_portfolio_narrative
+
+        summaries = [_summary("Acme", risk=10), _summary("Beta", risk=70)]
+        narrative = build_portfolio_narrative(summaries, llm_enabled=False)
+        assert isinstance(narrative, str)
+        assert "Beta" in narrative  # high-risk company named by the fallback
+
+    def test_empty_cohort(self) -> None:
+        from reports.network_lens import build_portfolio_narrative
+
+        assert build_portfolio_narrative([], llm_enabled=False) == "No companies in this cohort."
+
 
 class TestCohortDashboardPDF:
     def test_high_risk_section_lists_companies_over_50(self) -> None:
         from reports.network_lens import _build_dashboard_pdf
 
         summaries = [_summary("SafeCo", risk=10), _summary("RiskyCo", risk=75)]
-        pdf_bytes = _build_dashboard_pdf(summaries)
+        pdf_bytes = _build_dashboard_pdf(summaries, narrative="Test narrative.")
         assert pdf_bytes.startswith(b"%PDF")
+
+    def test_detail_page_added_when_flags_present(self) -> None:
+        import re
+
+        from reports.network_lens import _build_dashboard_pdf
+
+        summaries = [_summary("Acme", risk=60)]
+        pdf_bytes = _build_dashboard_pdf(summaries, narrative="Test narrative.")
+        page_count = len(re.findall(rb"/Type\s*/Page[^s]", pdf_bytes))
+        assert page_count >= 2  # dashboard page + risk/compliance detail page
 
     def test_percentile_helper(self) -> None:
         from reports.network_lens import _percentile

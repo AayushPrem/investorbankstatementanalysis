@@ -32,7 +32,12 @@ from demo.pipeline_runner import DemoResult, run_pipeline_on_bytes
 from pipeline.batch import BatchInput, BatchOrchestrator
 from pipeline.related_party import Affiliate, extract_counterparties
 from reports.angel_lens import _fmt_amount, _fmt_growth, _fmt_runway
-from reports.network_lens import CompanySummary, NetworkLensReport, build_company_summary
+from reports.network_lens import (
+    CompanySummary,
+    NetworkLensReport,
+    build_company_summary,
+    build_portfolio_narrative,
+)
 from schema.canonical import StatementDocument
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1090,7 +1095,8 @@ _LENS_CARDS = [
      "VC Lens plus compliance, reconciliation, customer master, raw data export, and "
      "fund-specific custom detectors."),
     ("🌐", "Network Lens", "Comparison XLSX + PDF", "Compare many portfolio companies side "
-     "by side — sortable table, risk distribution, sector breakdown, cohort dashboard."),
+     "by side — sortable table, the actual risk flags and compliance issues behind each "
+     "company's numbers, and an LLM-generated portfolio narrative for the investment committee."),
 ]
 
 
@@ -1202,11 +1208,13 @@ def _run_network_batch(files: list[tuple[str, bytes]], concurrency: int) -> None
                 compliance_report=outcome.compliance_report,
             ))
 
-        xlsx_bytes, pdf_bytes = NetworkLensReport().generate(summaries)
+        narrative = build_portfolio_narrative(summaries)
+        xlsx_bytes, pdf_bytes = NetworkLensReport().generate(summaries, narrative=narrative)
 
         st.session_state["network_batch_summary"] = batch_result.summary
         st.session_state["network_summaries"] = summaries
         st.session_state["network_failures"] = failures
+        st.session_state["network_narrative"] = narrative
         st.session_state["network_xlsx_bytes"] = xlsx_bytes
         st.session_state["network_pdf_bytes"] = pdf_bytes
 
@@ -1248,6 +1256,38 @@ def _render_network_comparison(summaries: list[CompanySummary]) -> None:
     fig.update_layout(title="Risk Score Distribution", height=300,
                        margin={"l": 10, "r": 10, "t": 40, "b": 10})
     st.plotly_chart(fig, use_container_width=True)
+
+
+def _render_network_detail(summaries: list[CompanySummary]) -> None:
+    """Per-company drill-down: the actual risk flags and compliance
+    exceptions behind each company's counts — not just the numbers.
+    """
+    with_detail = [s for s in summaries if s.risk_flags or s.compliance_exceptions]
+    if not with_detail:
+        st.success("No risk flags or compliance exceptions detected across the cohort.")
+        return
+
+    for s in sorted(with_detail, key=lambda s: -s.composite_risk_score):
+        n_items = len(s.risk_flags) + len(s.compliance_exceptions)
+        with st.expander(
+            f"**{s.company_name}** — risk {s.composite_risk_score:.0f}/100 · "
+            f"{s.compliance_status} · {n_items} item(s)",
+            expanded=(s.composite_risk_score >= 50),
+        ):
+            for f in s.risk_flags:
+                fg, bg = _SEV_COLOURS.get(f.severity, ("#374151", "#F3F4F6"))
+                st.markdown(
+                    f"{_badge(f.severity, fg, bg)} &nbsp; **{f.detector_name}** — {f.description}",
+                    unsafe_allow_html=True,
+                )
+            for e in s.compliance_exceptions:
+                fg, bg = _SEV_COLOURS.get(e.severity, ("#374151", "#F3F4F6"))
+                st.markdown(
+                    f"{_badge(e.severity, fg, bg)} &nbsp; **{e.rule_name}** "
+                    f"<span style='color:#6B7280;font-size:0.85rem;'>({e.regulatory_citation})</span> "
+                    f"— {e.description}",
+                    unsafe_allow_html=True,
+                )
 
 
 def _render_network_source() -> list[tuple[str, bytes]]:
@@ -1346,19 +1386,39 @@ def _render_network_mode() -> None:
         st.warning("No statements succeeded — nothing to compare.")
         return
 
-    _render_network_comparison(summaries)
+    narrative = st.session_state.get("network_narrative", "")
+    if narrative:
+        st.markdown("##### 🧭 Portfolio Narrative")
+        st.info(narrative)
 
-    st.divider()
-    st.markdown("### Downloads")
-    col1, col2 = st.columns(2)
-    with col1:
+    tab_compare, tab_detail, tab_dl = st.tabs([
+        "📊 Comparison", "🚩 Risk & Compliance Detail", "📄 Downloads",
+    ])
+
+    with tab_compare:
+        _render_network_comparison(summaries)
+
+    with tab_detail:
+        _render_network_detail(summaries)
+
+    with tab_dl:
+        st.markdown("### Network Lens — Comparison Workbook")
+        st.caption(
+            "5 sheets: Comparison (sortable/filterable) · Risk & Compliance Detail "
+            "(with portfolio narrative) · Risk Distribution · Sector Breakdown · Company Reports."
+        )
         st.download_button(
             "⬇ Download Network XLSX", data=st.session_state["network_xlsx_bytes"],
             file_name="network_lens.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary", use_container_width=True, key="dl_network_xlsx",
         )
-    with col2:
+        st.divider()
+        st.markdown("### Cohort Dashboard PDF")
+        st.caption(
+            "Portfolio narrative, median/P10/P90 stats, high-risk companies, burn outliers, "
+            "and full risk & compliance detail per company."
+        )
         st.download_button(
             "⬇ Download Cohort Dashboard PDF", data=st.session_state["network_pdf_bytes"],
             file_name="network_dashboard.pdf", mime="application/pdf",
