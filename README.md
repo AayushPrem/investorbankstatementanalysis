@@ -1,8 +1,8 @@
 # BSAA — Bank Statement Analysis Agent
 
-An agentic pipeline that ingests Indian bank statement PDFs (HDFC, ICICI) and produces structured investor-grade reports for angel investors and VC funds doing due diligence on early-stage companies.
+An agentic pipeline that ingests Indian bank statement PDFs (HDFC, ICICI) and produces structured investor-grade reports for angel investors, VCs, in-house finance teams, and angel networks doing due diligence on early-stage companies.
 
-**Current status: Sprint 1 + Sprint 2 + Sprint 3 complete — 733 tests passing.**
+**Current status: Sprints 1–4 complete, plus a full correctness/consistency review-and-fix pass — 900+ tests passing.**
 
 ---
 
@@ -10,17 +10,18 @@ An agentic pipeline that ingests Indian bank statement PDFs (HDFC, ICICI) and pr
 
 Upload a company's bank statement — PDF (digital or scanned), CSV, Excel, or a photographed page — and the system:
 
-1. Extracts every transaction and validates data integrity
+1. Extracts every transaction and validates data integrity, **halting rather than producing a report** if the statement fails validation or isn't from a supported bank
 2. Categorises each transaction (Revenue, Salary, Tax, Vendor Payment, etc.)
 3. Detects six classes of suspicious patterns (structuring, round-tripping, founder extraction, etc.)
 4. Computes financial health metrics (burn rate, runway, MoM growth)
-5. Tracks customer behaviour (NRR, churn, cohort retention, concentration)
+5. Tracks customer behaviour (NRR, churn, cohort retention, concentration) — and flags when revenue is dominated by payment-aggregator settlements (Razorpay, Cashfree, …) so individual customers aren't silently invented
 6. Identifies related-party transactions automatically from narration text
-7. Generates financial health alerts when key metrics cross investor-relevant thresholds
-8. Checks Indian regulatory compliance (§269ST cash limits, GST/TDS patterns, PMLA aggregation, related-party transaction limits)
+7. Generates financial health alerts when key metrics cross investor-relevant thresholds — the same thresholds every report lens uses, so two reports never disagree about the same statement
+8. Checks Indian regulatory compliance (§269ST cash limits, GST/TDS patterns, PMLA aggregation, related-party transaction limits) — each rule is explicitly labelled a heuristic, not a statutory determination
 9. Reconciles bank-statement reality against a company's pitch-deck / self-reported claims
-10. Produces a 1-page Angel Lens PDF, a 6-sheet VC Lens workbook, and a 10-sheet Workbench XLSX (with fund-specific custom detectors)
-11. Tags every run with schema + agent versions and supports replay/diff against the current code
+10. Produces a 1-page Angel Lens PDF, a 6-sheet VC Lens workbook, a 10-sheet Workbench XLSX (with fund-specific custom detectors), and a cross-company Network Lens comparison workbook
+11. Batch-processes many statements concurrently (failure-isolated — one bad statement never takes down the rest of a cohort) for portfolio-level comparison
+12. Tags every run with schema + agent versions and supports replay/diff against the current code
 
 ---
 
@@ -56,7 +57,7 @@ PDF / CSV / Excel / Scanned PDF / Image / Synthetic Statement
          ▼
 ┌─────────────────────┐
 │  Layer 5: Reports   │  Angel Lens PDF · VC Lens XLSX/PDF · Workbench XLSX/PDF
-│                     │  ReportLab · openpyxl · fund-specific custom detectors
+│                     │  Network Lens XLSX/PDF (cross-company) · ReportLab · openpyxl
 └─────────────────────┘
 ```
 
@@ -370,6 +371,30 @@ CSV/Excel column headers are matched by keyword (`Narration`/`Particulars`/`Desc
 
 ---
 
+## Sprint 4 — Network Lens, Batch Processing, Portfolio Narrative
+
+### Batch Orchestrator (`pipeline/batch.py`)
+Runs the full per-company pipeline over many statements concurrently. Each statement is CPU-bound (PDF parsing) and makes blocking LLM calls, so concurrency comes from running each one in a worker thread (`asyncio.to_thread`) under a semaphore, bounded by a configurable `concurrency` limit. **Failure-isolated by design** — one corrupted or unsupported-bank statement is captured as an exception against that input and never takes down the rest of the batch.
+
+### Network Lens Report (`reports/network_lens.py`)
+Cross-company comparison workbook for angel investor networks and fund portfolio reviews. `build_company_summary()` flattens one company's full pipeline output (financials, risk, customer analytics, compliance) into a `CompanySummary` row.
+
+**XLSX workbook (5 sheets)** — built with **openpyxl**:
+| Sheet | Contents |
+|---|---|
+| Comparison | One row per company — burn, revenue, runway, growth, active customers, churn, NRR, top-3 customer concentration, risk score, red flags, compliance status, aggregator-settled revenue %. Sortable/filterable Excel table. |
+| Risk & Compliance Detail | The actual triggering flags and compliance exceptions behind every company's score — not just the number |
+| Risk Distribution | Companies bucketed Low / Medium / High by composite risk score |
+| Sector Breakdown | Companies grouped by sector (if provided) |
+| Company Reports | Links to each company's individual detail report, when available |
+
+**Cohort Dashboard PDF** — portfolio narrative, median/P10/P90 stats across the cohort (burn, runway, NRR, risk score), a high-risk companies section, and full risk & compliance detail per company. Highlights any company whose revenue is aggregator-dominated, since that company's customer figures aren't directly comparable to the rest of the cohort.
+
+### Portfolio Narrative (`analysis/portfolio_narrative.py`)
+Generates a plain-English, investment-committee-facing summary across an entire cohort — patterns in risk, compliance, and financial health that wouldn't be visible from any single company's report. Claude Haiku with a rule-based fallback when no API key is set, same pattern as the risk analyst's narrative.
+
+---
+
 ## Demo UI (`demo/app.py`)
 
 Built with **Streamlit**. Run with:
@@ -377,7 +402,18 @@ Built with **Streamlit**. Run with:
 .venv\Scripts\streamlit.exe run demo/app.py
 ```
 
-### Two input modes (sidebar toggle):
+### Four analysis modes (sidebar radio) — one per report lens, same underlying pipeline:
+
+| Mode | Shows | Downloads |
+|---|---|---|
+| 👼 **Angel** | Verdict banner, 6 KPI tiles, top health signals — the quick read, no tabs | Angel Lens PDF |
+| 💼 **VC** | Financial · Risk Flags · Customers · Transactions · Related Parties (6 tabs) | VC Lens XLSX + PDF |
+| 🏛️ **Workbench** | Everything in VC mode, plus Compliance and Reconciliation (8 tabs) | Workbench XLSX + PDF |
+| 🌐 **Network** | Upload/generate many statements at once; cross-company comparison table, risk & compliance detail, portfolio narrative | Network Lens XLSX + Cohort Dashboard PDF |
+
+Each mode intentionally shows less than the next — Angel mode has no transaction ledger or compliance tab because the Angel Lens report doesn't have one either. The point is to demonstrate "one engine, many lenses": the same pipeline run, presented at the depth appropriate to that stakeholder.
+
+### Statement source (Angel/VC/Workbench modes):
 
 **Upload PDF** — Drop any HDFC or ICICI bank statement PDF.
 
@@ -392,17 +428,8 @@ Built with **Streamlit**. Run with:
 ### Smart affiliate detection (no manual typing):
 After the first pipeline pass, `extract_counterparties()` scans all narration text and presents a multi-select of auto-detected entities ranked by transaction volume. Select any to mark as affiliates → pipeline re-runs and tags their transactions automatically.
 
-### 8 analysis tabs:
-| Tab | Contents |
-|---|---|
-| 📈 Financial | Revenue vs burn bar chart · Transaction category pie chart · Financial Health Alerts section |
-| 🚩 Risk Flags | Composite risk score gauge · Expandable flag cards with evidence · Analyst narrative |
-| 👥 Customers | Active customer trend · NRR chart · Revenue concentration trajectory · Cohort retention heatmap · Churn table |
-| ⚖️ Compliance | Indian regulatory exceptions (§269ST, GST, TDS, PMLA, related-party limits) with investor risk framing |
-| 🔎 Reconciliation | Declared pitch-deck claims vs. bank-statement reality, with delta % and direction |
-| 📋 Transactions | Full ledger with category and related-party filters |
-| 🔗 Related Parties | Auto-detected counterparty table · Tagged related-party transactions · Aggregated by affiliate |
-| 📄 Downloads | Angel Lens PDF · VC Lens XLSX/PDF · Workbench XLSX/PDF |
+### Network mode:
+Upload multiple PDFs at once, or generate a synthetic cohort (2–10 companies across all 5 profiles and both banks, with a mixed or clean risk profile) — no real statements needed to try it.
 
 Note: the demo UI currently accepts PDF upload only (`type=["pdf"]`); the CSV/Excel/scanned-PDF/image adapters are available programmatically (see Sprint 3 section above) but not yet wired into the Streamlit uploader.
 
@@ -422,7 +449,8 @@ Note: the demo UI currently accepts PDF upload only (`type=["pdf"]`); the CSV/Ex
 | Customer embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
 | UI | Streamlit |
 | Charts (UI) | Plotly (pinned to `<6.0` for Streamlit compatibility) |
-| Testing | pytest (733 tests) |
+| Testing | pytest (900+ tests, plus a separate synthetic gold-set regression suite) |
+| Concurrency | asyncio (`asyncio.to_thread` + semaphore) for batch processing |
 
 ---
 
@@ -441,31 +469,36 @@ investorproject/
 │   └── _column_mapping.py         # Shared header-keyword matcher (csv.py + excel.py)
 ├── pipeline/
 │   ├── normaliser.py          # Raw rows → CanonicalTransaction
-│   ├── validator.py           # Balance continuity + data quality checks
+│   ├── validator.py           # Balance continuity + data quality checks (gates the pipeline)
 │   ├── related_party.py       # Affiliate tagging + counterparty extraction
-│   ├── customer_identity.py   # Customer deduplication (embeddings)
+│   ├── customer_identity.py   # Customer deduplication (embeddings) + aggregator exclusion
+│   ├── batch.py                # Concurrent, failure-isolated batch processing
 │   └── versioning.py          # Schema/agent version tags, ResultStore, replay, diff
 ├── analysis/
 │   ├── categoriser.py         # Rule-based + LLM transaction categorisation
 │   ├── financial_analyst.py   # Burn, runway, MoM growth metrics
 │   ├── risk.py                # 6 pattern detectors + composite score
-│   ├── customer_analytics.py  # NRR, churn, cohort, concentration
-│   ├── financial_health_alerts.py  # Metric-based investor alerts
+│   ├── customer_analytics.py  # NRR, churn, cohort, concentration, aggregator-revenue %
+│   ├── financial_health_alerts.py  # Metric-based investor alerts — the single shared
+│   │                                # source of runway/NRR/churn/burn/concentration bands
+│   │                                # every report lens reads from
 │   ├── compliance.py          # Runs a JurisdictionModule's rules
-│   └── reconciliation.py      # Declared claims vs. bank-statement reality
+│   ├── reconciliation.py      # Declared claims vs. bank-statement reality
+│   └── portfolio_narrative.py # Cross-company narrative for the Network Lens
 ├── jurisdictions/
 │   └── india/rules.py         # §269ST, GST, TDS, PMLA, related-party limit rules
 ├── reports/
 │   ├── angel_lens.py          # 1-page PDF for angel investors
 │   ├── vc_lens.py             # 6-sheet XLSX + 3-page PDF for VCs
-│   └── workbench_lens.py      # 10-sheet XLSX + 4-page PDF for in-house finance teams
+│   ├── workbench_lens.py      # 10-sheet XLSX + 4-page PDF for in-house finance teams
+│   └── network_lens.py        # 5-sheet XLSX + cohort dashboard PDF, cross-company
 ├── workbench_config.py        # Fund-specific detector toggles + custom detectors
 ├── tools/
 │   └── synthetic_gen.py       # Realistic bank statement PDF generator
 ├── demo/
-│   ├── app.py                 # Streamlit UI
+│   ├── app.py                 # Streamlit UI — 4 per-lens analysis modes
 │   └── pipeline_runner.py     # Pipeline orchestration for the demo
-├── tests/                     # 733 pytest tests
+├── tests/                     # 900+ pytest tests + tests/regression/ gold-set suite
 └── .cache/                    # Categoriser + embedding caches
 ```
 
@@ -473,32 +506,77 @@ investorproject/
 
 ## Running the Project
 
-**Install dependencies (virtual environment):**
+### 1. Clone the repository
+```bash
+git clone <this-repo-url>
+cd investorproject
+```
+
+### 2. Install dependencies (virtual environment)
+
+**Windows (PowerShell):**
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e .
+pip install -e ".[dev]"
 ```
 
-**Run tests:**
+**macOS / Linux:**
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Requires Python ≥ 3.11. `pip install -e ".[dev]"` installs the package itself plus pytest/ruff/mypy for testing and linting; drop `[dev]` for a runtime-only install.
+
+### 3. Run the tests
 ```powershell
-python -m pytest tests/ -q
+python -m pytest tests/ -q                 # unit + integration tests (~900+)
+python -m pytest tests/regression/ -v       # synthetic gold-set accuracy suite
+```
+Or, via the Makefile (macOS/Linux, or Git Bash on Windows):
+```bash
+make install     # venv + pip install -e ".[dev]"
+make test        # unit + integration tests
+make regression  # gold-set accuracy suite
+make lint        # ruff
+make typecheck   # mypy (strict, on schema/pipeline/analysis/adapters/reports/tools/jurisdictions)
+make all         # lint + typecheck + test + regression
 ```
 
-**Start the demo:**
+### 4. Start the demo
 ```powershell
 .venv\Scripts\streamlit.exe run demo/app.py
 ```
+```bash
+# macOS/Linux
+.venv/bin/streamlit run demo/app.py
+```
+Opens at `http://localhost:8501`. No bank statement or API key needed to try it — use "🏗️ Generate Synthetic" in the sidebar to create one inside the app.
 
-**Generate synthetic statements from CLI:**
+### 5. Generate synthetic statements from the CLI
 ```powershell
 python -m tools.synthetic_gen --bank hdfc --profile healthy_saas --months 12 --risk-mode realistic --output data/synthetic/
 ```
 
-**Environment variable** (optional — enables LLM features):
+### Optional: environment variable for LLM features
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ```
-Without it, the categoriser uses rule-only mode, the risk narrative uses fallback text, and financial health alert descriptions use rule-based text. All core analysis still runs.
+Without it, the categoriser uses rule-only mode, the risk/compliance/portfolio narratives use rule-based fallback text, and financial health alert descriptions use rule-based text. **All core analysis, every report, and the full test suite run correctly without an API key** — this is a deterministic-first system by design; the LLM is used only for language, never for the underlying numbers.
 
-**Tesseract OCR binary** (optional — only needed for `adapters/scanned_pdf.py` and `adapters/image.py`): install from https://github.com/tesseract-ocr/tesseract and ensure `tesseract` is on PATH. Every other adapter and the full test suite work without it.
+### Optional: Tesseract OCR binary
+Only needed for `adapters/scanned_pdf.py` and `adapters/image.py`. Install from https://github.com/tesseract-ocr/tesseract and ensure `tesseract` is on PATH. Every other adapter and the full test suite work without it.
+
+---
+
+## Known Limitations
+
+Being upfront about what this project has *not* yet proven, as of this writing:
+
+- **Every accuracy number here is measured against a synthetic gold set, generated by this project's own `tools/synthetic_gen.py`.** No component has ever been validated against a real HDFC/ICICI bank statement. This is the single largest open item.
+- On that synthetic gold set, two regression metrics currently sit below their stated targets: `risk_recall` (~73%, target 85% — churn detection structurally can't fire on statements under 4 months of data) and `customer_id_accuracy` (~82%, target 90% — weaker on anonymous-retail-style narrations, e.g. the `restaurant` profile, than on B2B invoicing-style narrations).
+- Only **HDFC and ICICI** digital PDF statements are supported today. Uploading any other bank's PDF fails with a clear error rather than silently producing an empty report, but broader bank support (a YAML-profile-driven normaliser with an LLM fallback for unrecognised formats) remains a planned, not-yet-built feature.
+- Reconciliation accuracy (`reconciliation_recall`) has no ground-truth measurement at all — there's no synthetic "declared pitch-deck claims with a known intentional mismatch" fixture yet to measure it against.
+- The Indian compliance rules and risk detectors are explicitly labelled heuristics for due-diligence screening, not statutory or legal determinations — see each rule's `description` field in `jurisdictions/india/rules.py`.
