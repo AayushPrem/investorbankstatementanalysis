@@ -27,6 +27,30 @@ class ValidationSeverity(StrEnum):
     WARNING = "WARNING"
 
 
+class ValidationFailedError(Exception):
+    """Raised by pipeline entry points when a statement fails validation.
+
+    The pipeline must not silently produce a normal report from data that
+    failed balance-continuity or integrity checks — callers halt on this
+    rather than continuing to categorisation/analysis/reports.
+    """
+
+    def __init__(self, report: "ValidationReport") -> None:
+        self.report = report
+        issue_lines = [
+            f"[{i.severity}] {i.code}"
+            + (f" (transaction_id={i.transaction_id})" if i.transaction_id else "")
+            + f": {i.message}"
+            for i in report.issues
+            if i.severity == ValidationSeverity.ERROR
+        ]
+        message = (
+            f"Validation failed with {report.error_count} error(s) across "
+            f"{report.transaction_count} transactions:\n" + "\n".join(issue_lines)
+        )
+        super().__init__(message)
+
+
 @dataclass
 class ValidationIssue:
     severity: ValidationSeverity

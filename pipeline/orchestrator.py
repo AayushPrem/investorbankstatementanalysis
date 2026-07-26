@@ -12,8 +12,8 @@ from adapters.digital_pdf import DigitalPDFAdapter
 from analysis.categoriser import CategorisationStats, Categoriser
 from analysis.financial_analyst import FinancialAnalyst, FinancialMetrics
 from pipeline.normaliser import Normaliser
-from pipeline.validator import ValidationReport, Validator
-from schema.canonical import StatementDocument
+from pipeline.validator import ValidationFailedError, ValidationReport, Validator
+from schema.canonical import StatementDocument, ValidationStatus
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +43,8 @@ class Orchestrator:
         raw = self._adapter.extract(path)
         doc = self._normaliser.normalise(raw)
         validation_report = self._validator.validate(doc)
+        if validation_report.status == ValidationStatus.FAILED:
+            raise ValidationFailedError(validation_report)
         doc, cat_stats = self._categoriser.categorise(doc)
         metrics = self._analyst.analyse(doc)
 

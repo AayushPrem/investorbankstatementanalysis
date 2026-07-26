@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
+import pdfplumber
 import pytest
 from openpyxl import load_workbook
 from io import BytesIO
@@ -277,6 +278,34 @@ class TestSummarySheetContent:
                 break
         assert found is not None
         assert abs(found - 42.0) < 0.01
+
+    def test_runway_matches_metrics(self) -> None:
+        result = _sample_result()
+        result.metrics.runway_months = Decimal("7.4")
+        xlsx, _ = VCLensReport().generate(result)
+        wb = _load_wb(xlsx)
+        ws = wb["Summary"]
+        found = None
+        for row in ws.iter_rows():
+            if row[0].value == "Runway (months)":
+                found = row[1].value
+                break
+        assert found is not None
+        assert abs(found - 7.4) < 0.01
+
+    def test_pdf_page1_kpi_values(self) -> None:
+        """Wave 4.1 — the PDF's KPI grid (page 1) must show the actual input
+        values, not just be structurally present."""
+        from reports.vc_lens import _fmt_amount
+
+        result = _sample_result()
+        result.metrics.runway_months = Decimal("7.4")
+        _, pdf_bytes = VCLensReport().generate(result)
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert _fmt_amount(result.metrics.total_revenue) in text
+        assert _fmt_amount(result.metrics.avg_monthly_burn) in text
+        assert "7.4mo" in text
 
     def test_summary_contains_company_name(self) -> None:
         result = _sample_result(company_name="Acme Pvt Ltd")
@@ -609,3 +638,75 @@ class TestEdgeCases:
         xlsx2, pdf2 = reporter.generate(result)
         # Both outputs should be valid and same size (deterministic)
         assert len(xlsx1) == len(xlsx2)
+
+
+class TestAggregatorCaveat:
+    """Wave 3.1 — aggregator-dominated revenue must surface a prominent
+    caveat in both the Customer Analytics sheet and the PDF's page 2."""
+
+    def _dominated_result(self) -> AnalysisResult:
+        result = _sample_result()
+        ca = _customer_analytics()
+        ca.aggregator_revenue_pct = 0.65
+        result.customer_analytics = ca
+        return result
+
+    def test_caveat_in_customer_analytics_sheet(self) -> None:
+        xlsx, _ = VCLensReport().generate(self._dominated_result())
+        wb = _load_wb(xlsx)
+        ws = wb["Customer Analytics"]
+        all_text = " ".join(
+            str(ws.cell(r, c).value) for r in range(1, ws.max_row + 1)
+            for c in range(1, 5) if ws.cell(r, c).value
+        )
+        assert "aggregator-settled" in all_text
+        assert "65%" in all_text
+
+    def test_caveat_absent_when_not_dominated(self) -> None:
+        xlsx, _ = VCLensReport().generate(_sample_result())
+        wb = _load_wb(xlsx)
+        ws = wb["Customer Analytics"]
+        all_text = " ".join(
+            str(ws.cell(r, c).value) for r in range(1, ws.max_row + 1)
+            for c in range(1, 5) if ws.cell(r, c).value
+        )
+        assert "aggregator-settled" not in all_text
+
+    def test_caveat_in_pdf_page2(self) -> None:
+        _, pdf_bytes = VCLensReport().generate(self._dominated_result())
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "aggregator-settled" in text
+
+
+class TestNoFlagsWordingIsQualified:
+    """Wave 3.3 — 'statement appears clean' overclaims: absence of a flag
+    from 6 specific detectors isn't the same as a clean bill of health."""
+
+    def test_summary_sheet_does_not_say_clean(self) -> None:
+        xlsx, _ = VCLensReport().generate(_sample_result())  # no flags by default
+        wb = _load_wb(xlsx)
+        ws = wb["Summary"]
+        all_text = " ".join(
+            str(ws.cell(r, c).value) for r in range(1, ws.max_row + 1)
+            for c in range(1, 5) if ws.cell(r, c).value
+        )
+        assert "appears clean" not in all_text
+        assert "no flags detected" in all_text.lower()
+
+    def test_red_flags_sheet_does_not_say_clean(self) -> None:
+        xlsx, _ = VCLensReport().generate(_sample_result())
+        wb = _load_wb(xlsx)
+        ws = wb["Red Flags"]
+        all_text = " ".join(
+            str(ws.cell(r, c).value) for r in range(1, ws.max_row + 1)
+            for c in range(1, 5) if ws.cell(r, c).value
+        )
+        assert "appears clean" not in all_text
+
+    def test_pdf_does_not_say_clean(self) -> None:
+        _, pdf_bytes = VCLensReport().generate(_sample_result())
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "appears clean" not in text
+        assert "no flags detected" in text.lower()

@@ -5,6 +5,8 @@ import datetime
 from decimal import Decimal
 from io import BytesIO
 
+import pdfplumber
+import pytest
 from openpyxl import load_workbook
 
 from analysis.compliance import ComplianceReport
@@ -103,6 +105,13 @@ class TestBuildCompanySummary:
         assert s.composite_risk_score == 10.0
         assert s.red_flag_count == 1
 
+    def test_flattens_burn_revenue_and_runway(self) -> None:
+        s = _summary("Acme")
+        m = _metrics()
+        assert s.monthly_burn == m.avg_monthly_burn
+        assert s.monthly_revenue == m.avg_monthly_revenue
+        assert s.runway_months == pytest.approx(float(m.runway_months))
+
     def test_compliance_status_clean(self) -> None:
         s = _summary("Acme", high_compliance=0)
         assert s.compliance_status == "clean"
@@ -137,6 +146,21 @@ class TestNetworkLensReport:
         ws = wb["Comparison"]
         names = [ws.cell(row=r, column=1).value for r in range(2, 5)]
         assert names == ["Acme", "Beta", "Gamma"]
+
+    def test_comparison_sheet_shows_correct_burn_revenue_runway_values(self) -> None:
+        """Wave 4.1 — verify the actual rendered cell values, not just row count."""
+        from reports.network_lens import _inr
+
+        s = _summary("Acme")
+        xlsx_bytes, _ = NetworkLensReport().generate([s])
+        wb = load_workbook(BytesIO(xlsx_bytes))
+        ws = wb["Comparison"]
+        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+        row = {headers[c - 1]: ws.cell(row=2, column=c).value for c in range(1, len(headers) + 1)}
+        assert row["Monthly Burn"] == _inr(s.monthly_burn)
+        assert row["Monthly Revenue"] == _inr(s.monthly_revenue)
+        assert row["Runway (mo)"] == f"{s.runway_months:.1f}"
+        assert row["Risk Score"] == f"{s.composite_risk_score:.0f}"
 
     def test_comparison_sheet_has_autofilter_table(self) -> None:
         summaries = [_summary("Acme"), _summary("Beta")]
@@ -269,3 +293,57 @@ class TestCohortDashboardPDF:
         values = [10.0, 20.0, 30.0, 40.0, 50.0]
         assert _percentile(values, 0.5) == 30.0
         assert _percentile([], 0.5) == 0.0
+
+
+class TestAggregatorCaveat:
+    """Wave 3.1 — a company whose revenue is aggregator-dominated must be
+    flagged in the comparison table and named in the portfolio PDF caveat."""
+
+    def _dominated_summary(self, name: str) -> CompanySummary:
+        ca = _customer_analytics()
+        ca.aggregator_revenue_pct = 0.72
+        return build_company_summary(
+            company_name=name, doc=_doc(), metrics=_metrics(),
+            risk_report=_risk_report(), customer_analytics=ca,
+            compliance_report=_compliance_report(),
+        )
+
+    def test_company_summary_carries_aggregator_fields(self) -> None:
+        s = self._dominated_summary("AggCo")
+        assert s.aggregator_revenue_pct == pytest.approx(0.72)
+        assert s.aggregator_dominated is True
+
+    def test_not_dominated_by_default(self) -> None:
+        s = _summary("Normal")
+        assert s.aggregator_dominated is False
+        assert s.aggregator_revenue_pct == 0.0
+
+    def test_comparison_sheet_shows_aggregator_column(self) -> None:
+        summaries = [_summary("Clean"), self._dominated_summary("AggCo")]
+        xlsx_bytes, _ = NetworkLensReport().generate(summaries)
+        wb = load_workbook(BytesIO(xlsx_bytes))
+        ws = wb["Comparison"]
+        headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+        assert "Aggregator-Settled Rev." in headers
+        col = headers.index("Aggregator-Settled Rev.") + 1
+        agg_row_value = ws.cell(row=3, column=col).value  # AggCo is row 3
+        assert "72" in str(agg_row_value)
+
+    def test_dashboard_pdf_names_dominated_companies(self) -> None:
+        from reports.network_lens import _build_dashboard_pdf
+
+        summaries = [_summary("Clean"), self._dominated_summary("AggCo")]
+        pdf_bytes = _build_dashboard_pdf(summaries, narrative="Test narrative.")
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "AggCo" in text
+        assert "aggregator-settled" in text
+
+    def test_dashboard_pdf_no_caveat_when_none_dominated(self) -> None:
+        from reports.network_lens import _build_dashboard_pdf
+
+        summaries = [_summary("Clean1"), _summary("Clean2")]
+        pdf_bytes = _build_dashboard_pdf(summaries, narrative="Test narrative.")
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "aggregator-settled" not in text

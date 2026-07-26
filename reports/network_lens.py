@@ -99,6 +99,8 @@ class CompanySummary:
     compliance_exceptions: list[ComplianceDetail] = field(default_factory=list)
     sector: str | None = None
     detail_report_path: str | None = None  # optional link target for Sheet 4
+    aggregator_revenue_pct: float = 0.0     # share of revenue from payment-aggregator settlements
+    aggregator_dominated: bool = False      # customer analytics unreliable if True
 
 
 def build_company_summary(
@@ -168,6 +170,8 @@ def build_company_summary(
         compliance_exceptions=compliance_exceptions,
         sector=sector,
         detail_report_path=detail_report_path,
+        aggregator_revenue_pct=customer_analytics.aggregator_revenue_pct,
+        aggregator_dominated=customer_analytics.is_aggregator_dominated,
     )
 
 
@@ -258,6 +262,7 @@ _COMPARISON_COLUMNS = [
     "Company", "Period Start", "Period End", "Monthly Burn", "Monthly Revenue",
     "Runway (mo)", "Revenue Growth", "Active Customers", "Churn Rate", "NRR",
     "Top Customer Share", "Risk Score", "Red Flags", "Compliance",
+    "Aggregator-Settled Rev.",
 ]
 
 
@@ -279,7 +284,7 @@ def _sheet_comparison(wb: Workbook, summaries: list[CompanySummary]) -> None:
             f"{s.runway_months:.1f}" if s.runway_months is not None else "—",
             _pct(s.revenue_growth), s.active_customers, _pct(s.churn_rate), _pct(s.nrr),
             _pct(s.top_customer_share), f"{s.composite_risk_score:.0f}", s.red_flag_count,
-            s.compliance_status,
+            s.compliance_status, _pct(s.aggregator_revenue_pct),
         ]
         for c, val in enumerate(values, 1):
             cell = ws.cell(row=r, column=c, value=val)
@@ -289,6 +294,8 @@ def _sheet_comparison(wb: Workbook, summaries: list[CompanySummary]) -> None:
                 cell.fill = _risk_fill(s.composite_risk_score)
             elif c == 14:  # Compliance
                 cell.fill = _compliance_fill(s.compliance_status)
+            elif c == 15 and s.aggregator_dominated:  # Aggregator-Settled Rev.
+                cell.fill = _RED
 
     last_row = len(summaries) + 1
     last_col = get_column_letter(len(_COMPARISON_COLUMNS))
@@ -300,6 +307,15 @@ def _sheet_comparison(wb: Workbook, summaries: list[CompanySummary]) -> None:
         ws.add_table(table)  # gives autofilter + sortable headers in Excel
 
     _autowidth(ws)
+
+    if any(s.aggregator_dominated for s in summaries):
+        note_row = last_row + 2
+        cell = ws.cell(row=note_row, column=1, value=(
+            "Highlighted rows: revenue is largely aggregator-settled (Razorpay, Cashfree, PayU, or "
+            "similar) — Active Customers, Churn Rate, NRR, and Top Customer Share for that company "
+            "exclude those settlements and do not reflect a complete customer picture."
+        ))
+        cell.font = Font(name="Calibri", bold=True, size=9, color="991B1B")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -472,6 +488,8 @@ def _build_dashboard_pdf(summaries: list[CompanySummary], narrative: str) -> byt
         "h2": ParagraphStyle("h2", fontName="Helvetica-Bold", fontSize=11,
                               textColor=rl_colors.HexColor("#44546A"), spaceAfter=4),
         "body": ParagraphStyle("body", fontName="Helvetica", fontSize=9, leading=12, spaceAfter=4),
+        "warning": ParagraphStyle("warning", fontName="Helvetica-Bold", fontSize=9,
+                                   textColor=rl_colors.HexColor("#991B1B"), spaceAfter=4),
     }
     navy = rl_colors.HexColor("#1F3864")
     story = [
@@ -490,6 +508,17 @@ def _build_dashboard_pdf(summaries: list[CompanySummary], narrative: str) -> byt
     story.append(Paragraph("Portfolio Narrative", styles["h2"]))
     story.append(Paragraph(narrative, styles["body"]))
     story.append(Spacer(1, 4 * mm))
+
+    dominated = [s.company_name for s in summaries if s.aggregator_dominated]
+    if dominated:
+        story.append(Paragraph(
+            f"{len(dominated)} of {len(summaries)} companies have revenue that is largely "
+            "aggregator-settled (see Comparison sheet) — customer analytics for those companies, "
+            "and any cohort-wide NRR/customer statistics below that blend them in, do not reflect "
+            "a complete customer picture: " + ", ".join(dominated),
+            styles["warning"],
+        ))
+        story.append(Spacer(1, 3 * mm))
 
     burns = [float(s.monthly_burn) for s in summaries]
     runways = [s.runway_months for s in summaries if s.runway_months is not None]

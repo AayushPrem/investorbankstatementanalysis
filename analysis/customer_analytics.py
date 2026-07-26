@@ -12,6 +12,7 @@ import statistics
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
 from schema.canonical import StatementDocument, TransactionCategory
 
 log = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ _ZERO = Decimal("0")
 _CHURN_SILENCE_MONTHS = 3
 _MIN_MONTHS_FOR_REGULARITY = 6
 _REGULARITY_GAP_MULTIPLE = 2.0
+# Matches the "material" threshold used elsewhere in this codebase for
+# round-amount clustering (analysis/risk.py) — below this, aggregator revenue
+# is treated as a normal minority payment channel, not a blind spot.
+_AGGREGATOR_DOMINANCE_THRESHOLD = 0.30
 
 
 # ---------------------------------------------------------------------------
@@ -59,11 +64,36 @@ class CustomerAnalyticsReport:
     cohort_retention: dict[str, dict[int, float]]  # cohort_month -> {offset: retention}
     concentration_trajectory: list[ConcentrationPoint]
     payment_regularity_alerts: list[RegularityAlert]
+    # Share (0-1) of REVENUE credit value from payment-aggregator settlement
+    # lines (Razorpay, Cashfree, ...) rather than an identifiable customer —
+    # these are excluded from every metric above. See is_aggregator_dominated.
+    aggregator_revenue_pct: float = 0.0
+    # month ("YYYY-MM") -> the set of customer_ids active that month. Lets
+    # callers (e.g. reports/workbench_lens.py's Customer Master sheet) look up
+    # per-customer active status without re-deriving it from raw transactions.
+    active_customer_ids_by_month: dict[str, frozenset[str]] = field(default_factory=dict)
+
+    @property
+    def is_aggregator_dominated(self) -> bool:
+        return self.aggregator_revenue_pct >= _AGGREGATOR_DOMINANCE_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def aggregator_caveat_text(report: CustomerAnalyticsReport) -> str | None:
+    """Prominent, investor-facing caveat for any customer-analytics surface
+    (alerts, lens reports) when aggregator-settled revenue dominates.
+    Returns None when not applicable, so callers can just skip rendering."""
+    if not report.is_aggregator_dominated:
+        return None
+    pct = report.aggregator_revenue_pct * 100
+    return (
+        f"Customer analytics unreliable — revenue is {pct:.0f}% aggregator-settled; "
+        "individual customers are not visible in bank data."
+    )
+
 
 def _add_months(ym: str, n: int) -> str:
     """Add n months to a 'YYYY-MM' string."""
@@ -124,9 +154,12 @@ def _compute_nrr(
     customer_active_months: dict[str, set[str]],
     all_months: list[str],
 ) -> dict[str, float]:
-    """For each consecutive month pair (M, M+1): monthly NRR = revenue from M's cohort
-    in M+1 divided by their revenue in M.  Values are annualised (^12) so they match
-    the investor-standard annual NRR definition (>100% = net expansion).
+    """For each consecutive month pair (M, M+1): period-over-period NRR = revenue
+    from M's cohort in M+1 divided by their revenue in M (>100% = net expansion,
+    <100% = net contraction). Reported as-is, per period — NOT annualised. A
+    single noisy month should not be raised to the 12th power and presented as
+    a full-year figure; the statement windows this pipeline analyses are
+    typically 3-24 months, so a per-period ratio is what's actually meaningful.
 
     Only existing customers from M are counted; new customers first appearing in M+1
     are excluded from the numerator and denominator.
@@ -141,9 +174,7 @@ def _compute_nrr(
         if rev_m0 == _ZERO:
             continue
         rev_m1 = sum(customer_month_revenue.get((cid, m1), _ZERO) for cid in cohort)
-        monthly_rate = float(rev_m1 / rev_m0)
-        # Annualise: monthly_rate^12 converts MoM retention to annual NRR
-        nrr[m1] = monthly_rate ** 12
+        nrr[m1] = float(rev_m1 / rev_m0)
     return nrr
 
 
@@ -246,7 +277,7 @@ def _detect_regularity_alerts(
     return alerts
 
 
-def _empty_report() -> CustomerAnalyticsReport:
+def _empty_report(aggregator_revenue_pct: float = 0.0) -> CustomerAnalyticsReport:
     return CustomerAnalyticsReport(
         monthly_active_customers={},
         monthly_active_trend=0.0,
@@ -256,7 +287,31 @@ def _empty_report() -> CustomerAnalyticsReport:
         cohort_retention={},
         concentration_trajectory=[],
         payment_regularity_alerts=[],
+        aggregator_revenue_pct=aggregator_revenue_pct,
+        active_customer_ids_by_month={},
     )
+
+
+def _aggregator_revenue_pct(doc: StatementDocument) -> float:
+    """Share of REVENUE credit value from aggregator-settlement transactions.
+
+    Computed over ALL revenue transactions, independent of customer_id —
+    the resolver never assigns one to aggregator transactions, so a
+    100%-aggregator-settled statement must still report this correctly
+    rather than looking like "no revenue data at all".
+    """
+    all_rev = [
+        t for t in doc.transactions
+        if t.category == TransactionCategory.REVENUE and t.credit is not None
+    ]
+    total = sum(t.credit for t in all_rev) or _ZERO
+    if total == _ZERO:
+        return 0.0
+    aggregator_total = sum(
+        t.credit for t in all_rev
+        if ANOMALY_FLAG_AGGREGATOR_SETTLEMENT in t.anomaly_flags
+    )
+    return float(aggregator_total / total)
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +322,8 @@ class CustomerAnalyticsAnalyst:
     """Derives customer-level analytics from a fully categorised StatementDocument."""
 
     def analyse(self, doc: StatementDocument) -> CustomerAnalyticsReport:
+        aggregator_pct = _aggregator_revenue_pct(doc)
+
         rev_txns = [
             t for t in doc.transactions
             if t.category == TransactionCategory.REVENUE
@@ -274,7 +331,7 @@ class CustomerAnalyticsAnalyst:
             and t.customer_id
         ]
         if not rev_txns:
-            return _empty_report()
+            return _empty_report(aggregator_pct)
 
         # ---- Build core data structures ----
         customer_month_revenue: dict[tuple[str, str], Decimal] = {}
@@ -337,6 +394,12 @@ class CustomerAnalyticsAnalyst:
         # ---- Payment regularity ----
         alerts = _detect_regularity_alerts(customer_active_months, customer_last_date)
 
+        # ---- Active customer IDs per month (inverted from customer_active_months) ----
+        active_by_month: dict[str, frozenset[str]] = {
+            m: frozenset(cid for cid, months in customer_active_months.items() if m in months)
+            for m in all_months
+        }
+
         return CustomerAnalyticsReport(
             monthly_active_customers=monthly_active,
             monthly_active_trend=trend,
@@ -346,4 +409,6 @@ class CustomerAnalyticsAnalyst:
             cohort_retention=cohort_ret,
             concentration_trajectory=conc,
             payment_regularity_alerts=alerts,
+            aggregator_revenue_pct=aggregator_pct,
+            active_customer_ids_by_month=active_by_month,
         )

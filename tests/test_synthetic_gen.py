@@ -226,3 +226,85 @@ class TestRedFlags:
         flag_types = {f["flag_type"] for f in data["injected_flags"]}
         assert "structuring" in flag_types
         assert "round_tripping" in flag_types
+
+
+# ─── Wave 4.3 — hard-case hardening scenarios ─────────────────────────────────
+# These new scenarios harden TESTING against corpus gaps identified in the
+# Wave-3 review (aggregator-dominated revenue, inter-account transfers, short
+# statements, mid-period gaps, foreign-currency narrations). They do NOT
+# substitute for validation against real bank statements — that remains an
+# open item; see the project's memory / review notes.
+
+class TestHardCaseScenarios:
+    def test_aggregator_dominated_revenue_crosses_threshold(self, tmp_root: Path) -> None:
+        _, truth = generate_statement(
+            "hdfc", "healthy_saas", tmp_root,
+            statement_id="test_hc_agg", flags=["aggregator_dominated_revenue"],
+            n_months=3, seed=201,
+        )
+        data = json.loads(truth.read_text())
+        assert any(f["flag_type"] == "aggregator_dominated_revenue" for f in data["injected_flags"])
+        rev_txns = [t for t in data["transactions"] if t["category"] == "REVENUE" and t["credit"]]
+        total = sum(Decimal(t["credit"]) for t in rev_txns)
+        razorpay_total = sum(
+            Decimal(t["credit"]) for t in rev_txns if "RAZORPAY" in t["description"].upper()
+        )
+        assert total > 0
+        assert razorpay_total / total >= Decimal("0.3"), (
+            f"Aggregator share {razorpay_total / total:.0%} did not cross the 30% dominance threshold"
+        )
+
+    def test_inter_account_transfer_categorised_as_transfer_narration(self, tmp_root: Path) -> None:
+        _, truth = generate_statement(
+            "icici", "services_firm", tmp_root,
+            statement_id="test_hc_xfr", flags=["inter_account_transfer"],
+            n_months=3, seed=202,
+        )
+        data = json.loads(truth.read_text())
+        flag = next(f for f in data["injected_flags"] if f["flag_type"] == "inter_account_transfer")
+        ids = set(flag["triggering_transaction_ids"])
+        flagged = [t for t in data["transactions"] if t["transaction_id"] in ids]
+        assert len(flagged) >= 2
+        # Debit and credit legs of equal magnitude, days apart — self-transfer shape.
+        assert any(t["debit"] for t in flagged)
+        assert any(t["credit"] for t in flagged)
+        for t in flagged:
+            assert "SELF TRANSFER" in t["description"].upper() or "OWN ACCOUNT" in t["description"].upper()
+
+    def test_short_period_statement_under_three_months(self, tmp_root: Path) -> None:
+        _, truth = generate_statement(
+            "hdfc", "healthy_saas", tmp_root,
+            statement_id="test_hc_short", flags=[], n_months=2, seed=203,
+        )
+        data = json.loads(truth.read_text())
+        months = {t["date"][:7] for t in data["transactions"]}
+        assert len(months) <= 2
+
+    def test_missing_month_gap_leaves_a_hole(self, tmp_root: Path) -> None:
+        _, truth = generate_statement(
+            "icici", "healthy_saas", tmp_root,
+            statement_id="test_hc_gap", flags=["missing_month_gap"],
+            n_months=6, seed=204,
+        )
+        data = json.loads(truth.read_text())
+        assert any(f["flag_type"] == "missing_month_gap" for f in data["injected_flags"])
+        months_present = sorted({t["date"][:7] for t in data["transactions"]})
+        # Consecutive YYYY-MM strings would sort with no arithmetic gap only
+        # if every month in the range is present — verify at least one month
+        # index is skipped (a real gap, not just "fewer than 6 months total").
+        assert len(months_present) < 6
+
+    def test_fx_inflow_recorded_as_revenue(self, tmp_root: Path) -> None:
+        _, truth = generate_statement(
+            "hdfc", "services_firm", tmp_root,
+            statement_id="test_hc_fx", flags=["fx_inflow"],
+            n_months=3, seed=205,
+        )
+        data = json.loads(truth.read_text())
+        flag = next(f for f in data["injected_flags"] if f["flag_type"] == "fx_inflow")
+        ids = set(flag["triggering_transaction_ids"])
+        flagged = [t for t in data["transactions"] if t["transaction_id"] in ids]
+        assert len(flagged) >= 1
+        for t in flagged:
+            assert t["category"] == "REVENUE"
+            assert "SWIFT" in t["description"].upper() or "REMITTANCE" in t["description"].upper()

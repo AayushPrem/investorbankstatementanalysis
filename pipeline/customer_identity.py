@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from pathlib import Path
 
 from pipeline.related_party import _clean_name as _strip_noise
@@ -33,6 +34,24 @@ log = logging.getLogger(__name__)
 
 _EMBEDDING_THRESHOLD = 0.85
 _CACHE_PATH = Path(".cache/embeddings.json")
+
+# Payment-gateway / aggregator settlement narrations are NOT individual
+# customers — a single settlement line is a lump-sum payout covering however
+# many end-customers paid through that gateway that day, and bank data alone
+# can never reveal who they were. Clustering these under one "customer" (as
+# exact-name matching would otherwise do) silently fabricates a fake customer
+# with implausibly high, steady revenue and zero churn. These are excluded
+# from customer_id assignment entirely rather than clustered.
+ANOMALY_FLAG_AGGREGATOR_SETTLEMENT = "aggregator_settlement"
+
+_KNOWN_AGGREGATORS = [
+    "RAZORPAY", "CASHFREE", "PAYU", "PAYTM", "PHONEPE", "INSTAMOJO",
+    "CCAVENUE", "CC AVENUE", "BILLDESK", "PINE\\s*LABS", "JUSPAY", "EBS",
+    "ATOM\\s*TECHNOLOGIES", "WORLDLINE",
+]
+_AGGREGATOR_RE = re.compile(
+    r"\b(" + "|".join(_KNOWN_AGGREGATORS) + r")\b", re.IGNORECASE
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -46,6 +65,13 @@ def clean_counterparty(name: str) -> str:
     Returns a lowercase, whitespace-normalised string, or "" if nothing remains.
     """
     return _strip_noise(name)
+
+
+def matched_aggregator(description: str) -> str | None:
+    """Return the matched aggregator name if *description* looks like a
+    payment-gateway settlement narration, else None."""
+    m = _AGGREGATOR_RE.search(description)
+    return m.group(1).upper() if m else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,6 +156,10 @@ class CustomerIdentityResolver:
         """Populate customer_id on all REVENUE transactions.
 
         Non-REVENUE transactions are left untouched (customer_id stays None).
+        Payment-gateway/aggregator settlement transactions (Razorpay, Cashfree,
+        PayU, ...) are excluded from clustering — see matched_aggregator() —
+        and tagged with the aggregator_settlement anomaly flag instead of a
+        customer_id, since a settlement line is not an individual customer.
         Returns the same doc object with transactions updated in place.
         """
         revenue_indices = [
@@ -139,9 +169,25 @@ class CustomerIdentityResolver:
         if not revenue_indices:
             return doc
 
+        aggregator_indices = [
+            i for i in revenue_indices
+            if matched_aggregator(doc.transactions[i].description)
+        ]
+        clusterable_indices = [i for i in revenue_indices if i not in set(aggregator_indices)]
+
+        for i in aggregator_indices:
+            txn = doc.transactions[i]
+            if ANOMALY_FLAG_AGGREGATOR_SETTLEMENT not in txn.anomaly_flags:
+                doc.transactions[i] = txn.model_copy(
+                    update={"anomaly_flags": [*txn.anomaly_flags, ANOMALY_FLAG_AGGREGATOR_SETTLEMENT]}
+                )
+
+        if not clusterable_indices:
+            return doc
+
         # Stage 1: canonical name per transaction
         canonical: dict[int, str] = {}
-        for i in revenue_indices:
+        for i in clusterable_indices:
             txn = doc.transactions[i]
             source = txn.counterparty if txn.counterparty is not None else txn.description
             canonical[i] = clean_counterparty(source) or txn.description.lower().strip()
@@ -155,7 +201,7 @@ class CustomerIdentityResolver:
             name_to_id = self._merge_via_embeddings(unique_names, name_to_id)
 
         # Apply customer_ids
-        for i in revenue_indices:
+        for i in clusterable_indices:
             cid = name_to_id[canonical[i]]
             doc.transactions[i] = doc.transactions[i].model_copy(
                 update={"customer_id": cid}
@@ -163,9 +209,11 @@ class CustomerIdentityResolver:
 
         n_unique = len({name_to_id[n] for n in unique_names})
         log.info(
-            "CustomerIdentityResolver: %d REVENUE transactions → %d distinct customers",
-            len(revenue_indices),
+            "CustomerIdentityResolver: %d REVENUE transactions → %d distinct customers "
+            "(%d aggregator-settlement transactions excluded)",
+            len(clusterable_indices),
             n_unique,
+            len(aggregator_indices),
         )
         return doc
 

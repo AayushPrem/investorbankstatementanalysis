@@ -147,7 +147,9 @@ class GSTPaymentConsistency:
     severity: Severity = Severity.MEDIUM
     description: str = (
         "Businesses with aggregate turnover > ₹40 lakh must file and pay GST monthly. "
-        "Absence of GST outflows when significant revenue is present is a red flag."
+        "Absence of GST outflows when significant revenue is present is a red flag. "
+        "This is a payment-pattern heuristic, not a statutory determination of GST non-compliance — "
+        "GST may have been paid through an account, method, or filing period this statement doesn't show."
     )
     _threshold_revenue: Decimal = field(default=_GST_ANNUAL_TURNOVER_GATE, init=False, repr=False)
 

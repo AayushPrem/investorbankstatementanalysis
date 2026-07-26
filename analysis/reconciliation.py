@@ -100,6 +100,29 @@ def _check_revenue(
         return None
     claimed = claims.declared_revenue_total
     actual = metrics.total_revenue
+    if actual == _ZERO:
+        if claimed == _ZERO:
+            return None
+        # Can't express a % deviation against a zero base — the mismatch is
+        # total, not partial, so flag it directly rather than let _pct's
+        # zero-guard mask it.
+        return ReconciliationFinding(
+            check_name="Total Revenue",
+            claimed_value=f"₹{float(claimed):,.0f}",
+            actual_value="₹0",
+            direction=MismatchDirection.OVER_REPORTED,
+            delta_pct=None,
+            severity="HIGH",
+            description=(
+                f"Company claimed ₹{float(claimed):,.0f} revenue but the bank statement shows "
+                "no matching revenue transactions at all."
+            ),
+            investor_framing=(
+                "Claimed revenue is entirely unsupported by bank data. Overstated revenue in "
+                "fundraising materials is a material misrepresentation and could void "
+                "term-sheet representations. Request source invoices and reconcile before proceeding."
+            ),
+        )
     delta = _pct(actual, claimed)
     if abs(delta) < 8:
         return None
@@ -251,7 +274,30 @@ def _check_salary_headcount(
     ) or _ZERO
     if expected_period == _ZERO:
         return None
-    delta = _pct(expected_period, actual + _ZERO)
+    if actual == _ZERO:
+        # Can't express a % deviation against a zero base — flag directly,
+        # same rationale as the zero-actual-revenue case above.
+        return ReconciliationFinding(
+            check_name="Salary vs Headcount",
+            claimed_value=f"₹{float(expected_period):,.0f} ({claims.declared_headcount} × ₹{float(claims.declared_avg_monthly_salary):,.0f}/mo)",
+            actual_value="₹0",
+            direction=MismatchDirection.OVER_REPORTED,
+            delta_pct=None,
+            severity="HIGH",
+            description=(
+                f"Declared headcount × avg salary implies ₹{float(expected_period):,.0f} salary outflow "
+                "but the bank statement shows no salary payments at all."
+            ),
+            investor_framing=(
+                "Declared headcount and salary levels imply payroll spend that isn't visible in the "
+                "bank statement at all — this suggests undisclosed headcount, off-book payroll, or a "
+                "materially overstated headcount claim."
+            ),
+        )
+    # _pct(actual, claimed) = (claimed - actual) / actual * 100 — actual (real bank
+    # spend) is the base, expected_period (declared-implied spend) is "claimed",
+    # matching the contract used by every other check in this module.
+    delta = _pct(actual + _ZERO, expected_period)
     if abs(delta) < 18:
         return None
     direction = MismatchDirection.OVER_REPORTED if delta > 0 else MismatchDirection.UNDER_REPORTED
@@ -267,13 +313,13 @@ def _check_salary_headcount(
             f"but bank shows ₹{float(actual):,.0f} ({abs(delta):.0f}% gap)."
         ),
         investor_framing=(
-            f"Salary spend is {abs(delta):.0f}% {'higher' if delta > 0 else 'lower'} than the declared "
+            f"Salary spend is {abs(delta):.0f}% {'lower' if delta > 0 else 'higher'} than the declared "
             "headcount × average salary would imply. "
             + (
-                "Higher-than-expected spend suggests undisclosed headcount or off-payroll contractors."
-                if delta > 0 else
                 "Lower-than-expected spend may indicate declared headcount is overstated or salaries "
                 "are partially paid in cash — both flag poor governance."
+                if delta > 0 else
+                "Higher-than-expected spend suggests undisclosed headcount or off-payroll contractors."
             )
         ),
     )

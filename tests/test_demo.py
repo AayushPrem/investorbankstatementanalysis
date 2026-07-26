@@ -154,6 +154,23 @@ class TestErrorHandling:
         with pytest.raises(Exception):
             run_pipeline_on_bytes(b"", "empty.pdf")
 
+    def test_unsupported_bank_raises_and_produces_no_report(self) -> None:
+        """Wave 4.2 — uploading a non-HDFC/ICICI statement must halt with a
+        clear error, never fall through to an empty/misleading report."""
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        c.drawString(50, 800, "State Bank of India")
+        c.drawString(50, 780, "Account Statement")
+        c.save()
+
+        with pytest.raises(Exception, match="HDFC and ICICI"):
+            run_pipeline_on_bytes(buf.getvalue(), "sbi_statement.pdf")
+
 
 # ─── All gold PDFs smoke test ─────────────────────────────────────────────────
 

@@ -157,6 +157,70 @@ class TestNeverLostCustomer:
         assert high_findings  # should be HIGH severity
 
 
+class TestRevenueZeroActualMasking:
+    def test_claimed_revenue_but_zero_actual_still_flags(self):
+        """A company claiming revenue with zero matching bank revenue must be flagged —
+        previously _pct's zero-guard silently swallowed this as 'no finding'."""
+        claims = CompanyClaims(declared_revenue_total=Decimal("500000"))
+        report = ReconciliationAnalyst(llm_enabled=False).analyse(
+            _doc(), claims, _empty_ca(), _metrics(revenue=0)
+        )
+        rev_findings = [f for f in report.findings if f.check_name == "Total Revenue"]
+        assert len(rev_findings) == 1
+        assert rev_findings[0].direction == MismatchDirection.OVER_REPORTED
+        assert rev_findings[0].severity == "HIGH"
+        assert rev_findings[0].actual_value == "₹0"
+
+    def test_both_zero_no_finding(self):
+        claims = CompanyClaims(declared_revenue_total=Decimal("0"))
+        report = ReconciliationAnalyst(llm_enabled=False).analyse(
+            _doc(), claims, _empty_ca(), _metrics(revenue=0)
+        )
+        assert not any(f.check_name == "Total Revenue" for f in report.findings)
+
+
+class TestSalaryHeadcountDirection:
+    """declared_headcount x declared_avg_monthly_salary is the 'claimed' implied
+    spend; SALARY-category bank debits are the 'actual' spend. claimed > actual
+    must report OVER_REPORTED (declared headcount/salary overstated); claimed <
+    actual must report UNDER_REPORTED (hidden headcount) — previously inverted
+    because _pct was called with the arguments swapped."""
+
+    def test_actual_lower_than_claimed_is_over_reported(self):
+        # declared 5 x 50,000/mo x 3 months = 750,000 implied; bank shows only 450,000 (40% lower)
+        claims = CompanyClaims(declared_headcount=5, declared_avg_monthly_salary=Decimal("50000"))
+        txns = [_txn("s1", debit=450000, cat=TransactionCategory.SALARY)]
+        report = ReconciliationAnalyst(llm_enabled=False).analyse(
+            _doc(*txns), claims, _empty_ca(), _metrics(period_months=3)
+        )
+        findings = [f for f in report.findings if f.check_name == "Salary vs Headcount"]
+        assert len(findings) == 1
+        assert findings[0].direction == MismatchDirection.OVER_REPORTED
+
+    def test_actual_higher_than_claimed_is_under_reported(self):
+        # declared 5 x 50,000/mo x 3 months = 750,000 implied; bank shows 1,050,000 (40% higher)
+        # — real spend exceeds what the declared headcount implies, suggesting undisclosed headcount.
+        claims = CompanyClaims(declared_headcount=5, declared_avg_monthly_salary=Decimal("50000"))
+        txns = [_txn("s1", debit=1050000, cat=TransactionCategory.SALARY)]
+        report = ReconciliationAnalyst(llm_enabled=False).analyse(
+            _doc(*txns), claims, _empty_ca(), _metrics(period_months=3)
+        )
+        findings = [f for f in report.findings if f.check_name == "Salary vs Headcount"]
+        assert len(findings) == 1
+        assert findings[0].direction == MismatchDirection.UNDER_REPORTED
+
+    def test_zero_actual_salary_still_flags(self):
+        claims = CompanyClaims(declared_headcount=5, declared_avg_monthly_salary=Decimal("50000"))
+        report = ReconciliationAnalyst(llm_enabled=False).analyse(
+            _doc(), claims, _empty_ca(), _metrics(period_months=3)
+        )
+        findings = [f for f in report.findings if f.check_name == "Salary vs Headcount"]
+        assert len(findings) == 1
+        assert findings[0].direction == MismatchDirection.OVER_REPORTED
+        assert findings[0].severity == "HIGH"
+        assert findings[0].actual_value == "₹0"
+
+
 class TestReconciliationReport:
     def test_returns_report_type(self):
         claims = CompanyClaims(declared_revenue_total=Decimal("1000000"))

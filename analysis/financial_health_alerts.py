@@ -20,11 +20,105 @@ from typing import Any
 
 from analysis.customer_analytics import CustomerAnalyticsReport
 from analysis.financial_analyst import FinancialMetrics
-from analysis.risk import Severity
+from analysis.risk import _CONC_HIGH, _CONC_MEDIUM, Severity
 
 log = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared threshold/band classification (Wave 3.2 consolidation)
+#
+# This is the single source of truth for runway/NRR/churn/burn/concentration
+# bands — every report lens (angel, VC, workbench, network) imports these
+# classify_* functions rather than re-implementing its own cut points. Each
+# function returns a short string tag from a fixed vocabulary; callers map
+# the tag to their own report-specific colour and phrasing, but the numeric
+# BOUNDARY always comes from here, so the same statement can no longer get a
+# different band from different lenses.
+#
+# Concentration threshold constants are owned by analysis/risk.py (the actual
+# flag-generating detector) and re-exported here rather than duplicated a
+# third time — analysis/risk.py has no dependency on this module, so this
+# import direction doesn't create a cycle.
+# ─────────────────────────────────────────────────────────────────────────────
+
+RUNWAY_CRITICAL_MONTHS = Decimal("2")
+RUNWAY_LOW_MONTHS = Decimal("4")
+RUNWAY_HEALTHY_MONTHS = Decimal("6")
+
+BURN_EXTREME_RATIO = 3.0
+BURN_HIGH_RATIO = 1.5
+
+NRR_SEVERE_PCT = 0.70
+NRR_CONTRACTION_PCT = 0.85
+NRR_PAR_PCT = 1.00
+
+CHURN_HIGH_PCT = 0.30
+CHURN_ELEVATED_PCT = 0.15
+
+# Concentration is measured on TOP-3 customer revenue share (not top-1) —
+# matches analysis/risk.py's customer_concentration detector, the actual
+# source of the Red Flags a company gets scored against.
+CONCENTRATION_HIGH_PCT = float(_CONC_HIGH)
+CONCENTRATION_MEDIUM_PCT = float(_CONC_MEDIUM)
+
+
+def classify_runway(months: Decimal | float | None) -> str:
+    """'healthy' (incl. profitable/no-runway-risk) | 'short' | 'low' | 'critical'."""
+    if months is None:
+        return "healthy"
+    m = Decimal(str(months))
+    if m < RUNWAY_CRITICAL_MONTHS:
+        return "critical"
+    if m < RUNWAY_LOW_MONTHS:
+        return "low"
+    if m < RUNWAY_HEALTHY_MONTHS:
+        return "short"
+    return "healthy"
+
+
+def classify_burn_ratio(burn: Decimal | float, revenue: Decimal | float) -> str:
+    """'normal' | 'high' | 'extreme'. Ratio of burn to revenue."""
+    revenue = float(revenue)
+    if revenue <= 0:
+        return "normal"
+    ratio = float(burn) / revenue
+    if ratio >= BURN_EXTREME_RATIO:
+        return "extreme"
+    if ratio >= BURN_HIGH_RATIO:
+        return "high"
+    return "normal"
+
+
+def classify_nrr(ratio: float) -> str:
+    """'healthy' (>=100%) | 'below_par' | 'contraction' | 'severe'. *ratio* is 0-1 scale."""
+    if ratio < NRR_SEVERE_PCT:
+        return "severe"
+    if ratio < NRR_CONTRACTION_PCT:
+        return "contraction"
+    if ratio < NRR_PAR_PCT:
+        return "below_par"
+    return "healthy"
+
+
+def classify_churn(churned_pct: float) -> str:
+    """'normal' | 'elevated' | 'high'. *churned_pct* is churned/peak-active, 0-1 scale."""
+    if churned_pct >= CHURN_HIGH_PCT:
+        return "high"
+    if churned_pct >= CHURN_ELEVATED_PCT:
+        return "elevated"
+    return "normal"
+
+
+def classify_concentration(top3_share: float) -> str:
+    """'low' | 'medium' | 'high'. *top3_share* is the top-3 customers' revenue share, 0-1 scale."""
+    if top3_share > CONCENTRATION_HIGH_PCT:
+        return "high"
+    if top3_share > CONCENTRATION_MEDIUM_PCT:
+        return "medium"
+    return "low"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,20 +174,21 @@ def _detect_runway(m: FinancialMetrics) -> list[tuple]:
     if m.runway_months is None:
         return []
     r = float(m.runway_months)
-    if r < 2.0:
+    band = classify_runway(m.runway_months)
+    if band == "critical":
         return [("critical_runway", Severity.HIGH, "Runway", f"{r:.1f} months",
                  f"Runway is critically low at {r:.1f} months. At the current burn rate of "
                  f"{_fmt_inr(m.avg_monthly_burn)}/month the company will run out of cash imminently "
                  f"without fresh capital or drastic cost cuts.",
                  {"runway_months": r, "monthly_burn": float(m.avg_monthly_burn),
                   "closing_balance": float(m.closing_balance)})]
-    if r < 4.0:
+    if band == "low":
         return [("low_runway", Severity.MEDIUM, "Runway", f"{r:.1f} months",
                  f"Runway of {r:.1f} months is uncomfortably short. The company needs to either "
                  f"close a fundraise or reduce its {_fmt_inr(m.avg_monthly_burn)}/month burn "
                  f"within the next 1–2 months to avoid a cash crisis.",
                  {"runway_months": r, "monthly_burn": float(m.avg_monthly_burn)})]
-    if r < 6.0:
+    if band == "short":
         return [("short_runway", Severity.LOW, "Runway", f"{r:.1f} months",
                  f"With {r:.1f} months of runway the company is not yet in crisis, but fundraising "
                  f"conversations should already be underway given typical closing timelines of 3–6 months.",
@@ -105,7 +200,8 @@ def _detect_burn_vs_revenue(m: FinancialMetrics) -> list[tuple]:
     if m.avg_monthly_revenue == _ZERO:
         return []
     ratio = float(m.avg_monthly_burn / m.avg_monthly_revenue)
-    if ratio >= 3.0:
+    band = classify_burn_ratio(m.avg_monthly_burn, m.avg_monthly_revenue)
+    if band == "extreme":
         return [("extreme_burn_rate", Severity.HIGH, "Burn / Revenue ratio", f"{ratio:.1f}×",
                  f"The company burns {ratio:.1f}× its monthly revenue — spending "
                  f"{_fmt_inr(m.avg_monthly_burn)} to earn {_fmt_inr(m.avg_monthly_revenue)}. "
@@ -113,7 +209,7 @@ def _detect_burn_vs_revenue(m: FinancialMetrics) -> list[tuple]:
                  f"growth evidence.",
                  {"burn_revenue_ratio": ratio, "avg_monthly_burn": float(m.avg_monthly_burn),
                   "avg_monthly_revenue": float(m.avg_monthly_revenue)})]
-    if ratio >= 1.5:
+    if band == "high":
         return [("high_burn_rate", Severity.MEDIUM, "Burn / Revenue ratio", f"{ratio:.1f}×",
                  f"Monthly burn of {_fmt_inr(m.avg_monthly_burn)} is {ratio:.1f}× revenue of "
                  f"{_fmt_inr(m.avg_monthly_revenue)}. The company is spending significantly more "
@@ -210,22 +306,23 @@ def _detect_nrr(ca: CustomerAnalyticsReport) -> list[tuple]:
         return []
     recent_nrr = list(ca.nrr_per_month.values())[-1]
     pct = float(recent_nrr) * 100
+    band = classify_nrr(recent_nrr)
 
-    if pct < 70:
+    if band == "severe":
         return [("severe_nrr_contraction", Severity.HIGH, "Net Revenue Retention", f"{pct:.0f}%",
-                 f"Annual NRR of {pct:.0f}% means the existing customer base is contracting sharply — "
-                 f"the company retains only ₹{pct:.0f} for every ₹100 of MRR from the prior month, annualised. "
+                 f"Period-over-period NRR of {pct:.0f}% means the existing customer base is contracting sharply — "
+                 f"the company retains only ₹{pct:.0f} for every ₹100 of revenue from the prior month. "
                  f"At this rate, the company would lose all existing revenue without sustained new acquisition.",
                  {"nrr_pct": pct})]
-    if pct < 85:
+    if band == "contraction":
         return [("nrr_contraction", Severity.MEDIUM, "Net Revenue Retention", f"{pct:.0f}%",
-                 f"Annual NRR of {pct:.0f}% indicates net revenue contraction from existing customers. "
+                 f"Period-over-period NRR of {pct:.0f}% indicates net revenue contraction from existing customers. "
                  f"The company must continuously acquire new customers just to maintain flat revenue, "
                  f"which increases CAC pressure and masks underlying retention problems.",
                  {"nrr_pct": pct})]
-    if pct < 100:
+    if band == "below_par":
         return [("below_par_nrr", Severity.LOW, "Net Revenue Retention", f"{pct:.0f}%",
-                 f"Annual NRR of {pct:.0f}% is below the 100% breakeven. While not alarming, it means the "
+                 f"Period-over-period NRR of {pct:.0f}% is below the 100% breakeven. While not alarming, it means the "
                  f"company is not yet generating net expansion from existing customers — a key efficiency "
                  f"driver for SaaS businesses.",
                  {"nrr_pct": pct})]
@@ -239,9 +336,11 @@ def _detect_churn(ca: CustomerAnalyticsReport, m: FinancialMetrics) -> list[tupl
     # Estimate % of customer base that churned
     max_active = max(ca.monthly_active_customers.values(), default=1)
     churn_count = len(ca.churn_events)
-    churn_pct = churn_count / max(max_active, 1) * 100
+    churn_ratio = churn_count / max(max_active, 1)
+    churn_pct = churn_ratio * 100
+    band = classify_churn(churn_ratio)
 
-    if churn_pct >= 30:
+    if band == "high":
         return [("high_churn", Severity.HIGH, "Customer churn",
                  f"{churn_count} customers ({churn_pct:.0f}%)",
                  f"{churn_count} customers ({churn_pct:.0f}% of peak base) have churned during the "
@@ -249,7 +348,7 @@ def _detect_churn(ca: CustomerAnalyticsReport, m: FinancialMetrics) -> list[tupl
                  f"customer success problem and will severely constrain growth even with strong acquisition.",
                  {"churned_customers": churn_count, "churn_pct": round(churn_pct, 1),
                   "peak_active": max_active})]
-    if churn_pct >= 15:
+    if band == "elevated":
         return [("elevated_churn", Severity.MEDIUM, "Customer churn",
                  f"{churn_count} customers ({churn_pct:.0f}%)",
                  f"{churn_count} customers ({churn_pct:.0f}% of peak base) stopped paying during the "
@@ -257,6 +356,45 @@ def _detect_churn(ca: CustomerAnalyticsReport, m: FinancialMetrics) -> list[tupl
                  f"new customer acquisition to sustain revenue growth.",
                  {"churned_customers": churn_count, "churn_pct": round(churn_pct, 1)})]
     return []
+
+
+def _detect_concentration(ca: CustomerAnalyticsReport) -> list[tuple]:
+    if not ca.concentration_trajectory:
+        return []
+    top3 = ca.concentration_trajectory[-1].top3_share
+    pct = top3 * 100
+    band = classify_concentration(top3)
+
+    if band == "high":
+        return [("high_customer_concentration", Severity.HIGH, "Revenue concentration",
+                 f"{pct:.0f}% (top 3 customers)",
+                 f"The top 3 customers account for {pct:.0f}% of revenue — above the "
+                 f"{CONCENTRATION_HIGH_PCT*100:.0f}% high-concentration threshold. Losing any one of them "
+                 f"would be a material, possibly existential, revenue shock. Verify contract duration and "
+                 f"exclusivity terms with these customers.",
+                 {"top3_concentration_pct": round(pct, 1)})]
+    if band == "medium":
+        return [("moderate_customer_concentration", Severity.MEDIUM, "Revenue concentration",
+                 f"{pct:.0f}% (top 3 customers)",
+                 f"The top 3 customers account for {pct:.0f}% of revenue. This is a moderate concentration "
+                 f"level — worth monitoring, and diversifying the customer base would reduce risk, but it "
+                 f"is not yet at a critical level.",
+                 {"top3_concentration_pct": round(pct, 1)})]
+    return []
+
+
+def _detect_aggregator_dominated_revenue(ca: CustomerAnalyticsReport) -> list[tuple]:
+    if not ca.is_aggregator_dominated:
+        return []
+    pct = ca.aggregator_revenue_pct * 100
+    return [("aggregator_dominated_revenue", Severity.HIGH, "Customer analytics reliability",
+             f"{pct:.0f}% aggregator-settled",
+             f"Customer analytics unreliable — revenue is {pct:.0f}% aggregator-settled "
+             f"(Razorpay, Cashfree, PayU, or similar); individual customers are not visible "
+             f"in bank data. Active customer counts, churn, NRR, and concentration figures "
+             f"in this report exclude these settlements and should not be treated as a "
+             f"complete picture of the customer base.",
+             {"aggregator_revenue_pct": round(pct, 1)})]
 
 
 def _detect_customer_count_trend(ca: CustomerAnalyticsReport) -> list[tuple]:
@@ -359,6 +497,8 @@ class FinancialHealthAnalyst:
         raw.extend(_detect_nrr(customer_analytics))
         raw.extend(_detect_churn(customer_analytics, metrics))
         raw.extend(_detect_customer_count_trend(customer_analytics))
+        raw.extend(_detect_concentration(customer_analytics))
+        raw.extend(_detect_aggregator_dominated_revenue(customer_analytics))
 
         if not raw:
             return FinancialHealthReport(alerts=[])

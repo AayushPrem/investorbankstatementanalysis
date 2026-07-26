@@ -57,6 +57,12 @@ class DigitalPDFAdapter:
             raise AdapterError(f"pdfplumber could not read {pdf_path.name}: {exc}") from exc
 
         bank = _detect_bank(pages_text)
+        if bank == "UNKNOWN":
+            raise AdapterError(
+                f"Could not identify a supported bank in {pdf_path.name!r}. "
+                "BSAA currently supports HDFC and ICICI bank statements only — "
+                "other formats will silently extract 0 transactions if this check is bypassed."
+            )
         return RawStatement(
             source_path=str(pdf_path),
             bank_name=bank,

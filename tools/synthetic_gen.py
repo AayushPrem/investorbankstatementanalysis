@@ -332,6 +332,21 @@ def _inr(amount: Decimal | None) -> str:
     return ",".join(groups) + "," + last3 + "." + decimal_part
 
 
+def _inr_signed(amount: Decimal | None) -> str:
+    """Same digit-grouping as _inr(), but preserves a negative sign.
+
+    Used only for the running/closing balance column, which can legitimately
+    go negative during an overdraft period. _inr() abs()es its input (correct
+    for debit/credit amounts, which are never negative by construction) — using
+    it for balance would silently print a negative balance as positive, making
+    the rendered PDF's own numbers internally inconsistent (the running-balance
+    arithmetic the Validator checks would then never add up).
+    """
+    if amount is None:
+        return ""
+    return ("-" if amount < 0 else "") + _inr(amount)
+
+
 def _bcode() -> str:
     return random.choice(_BANK_CODES) + str(random.randint(1_000_000, 9_999_999))
 
@@ -1193,6 +1208,129 @@ def _inject_compliance_cash_loan(txns, company, bank, start):
     return txns + [t], flag
 
 
+def _inject_aggregator_dominated(txns, company, bank, start):
+    """Add large Razorpay-settlement revenue so aggregator-settled revenue
+    crosses the Wave 3.1 dominance threshold (30%) — exercises customer-id
+    exclusion (pipeline/customer_identity.py) and the aggregator caveat
+    surfaced on every lens's customer analytics output."""
+    existing_revenue = sum(
+        (t.credit for t in txns if t.category == "REVENUE" and t.credit), Decimal("0")
+    ) or Decimal("300000")
+    per_month = (existing_revenue * Decimal("2") / Decimal("3")).quantize(Decimal("1"))
+    new_txns = []
+    for yr, mo in _months(start, 3):
+        d = _rand_day(yr, mo, 5, 25)
+        t = _make_txn(
+            d, _narration(bank, "razorpay", "", random.randint(100000, 999999)),
+            credit=per_month, category="REVENUE", anomaly_flags=["aggregator_settlement"],
+        )
+        new_txns.append(t)
+    flag = {
+        "flag_type": "aggregator_dominated_revenue",
+        "description": (
+            f"Added ₹{per_month:,.0f}/month in Razorpay settlement revenue across 3 months, "
+            "pushing aggregator-settled share well past the 30% dominance threshold."
+        ),
+        "triggering_transaction_ids": [t.txn_id for t in new_txns],
+    }
+    return txns + new_txns, flag
+
+
+def _inject_inter_account_transfers(txns, company, bank, start):
+    """Add self-transfer transactions to/from another account the company
+    holds — tests TRANSFER categorisation of self-transfer narrations and
+    whether round-tripping detection can be fooled by same-owner transfers
+    (a debit then a credit of the same amount within days, but not fraud)."""
+    other_acct = f"XXXX{random.randint(1000, 9999)}"
+    new_txns = []
+    for yr, mo in _months(start, 2):
+        amt = Decimal(str(random.randint(50, 200) * 1000))
+        out_d = _rand_day(yr, mo, 5, 15)
+        in_d = out_d + timedelta(days=random.randint(1, 3))
+        if bank == "hdfc":
+            out_desc = f"NEFT/{_bcode()}/OWN ACCOUNT TRANSFER {other_acct}/{_hex8()}"
+            in_desc  = f"NEFT/{_bcode()}/OWN ACCOUNT TRANSFER {other_acct}/{_hex8()}"
+        else:
+            out_desc = f"NEFT DR-{_bcode()}-SELF TRANSFER {other_acct}"
+            in_desc  = f"NEFT CR-{_bcode()}-SELF TRANSFER {other_acct}"
+        t_out = _make_txn(out_d, out_desc, debit=amt, category="TRANSFER",
+                           anomaly_flags=["inter_account_transfer"])
+        t_in = _make_txn(in_d, in_desc, credit=amt, category="TRANSFER",
+                          anomaly_flags=["inter_account_transfer"])
+        new_txns += [t_out, t_in]
+    flag = {
+        "flag_type": "inter_account_transfer",
+        "description": (
+            f"Added {len(new_txns)} self-transfer transactions to/from another account "
+            f"({other_acct}) the company holds — tests TRANSFER categorisation and "
+            "round-tripping false-positive resistance."
+        ),
+        "triggering_transaction_ids": [t.txn_id for t in new_txns],
+    }
+    return txns + new_txns, flag
+
+
+def _inject_missing_month_gap(txns, company, bank, start):
+    """Remove all transactions from the middle month of the statement period
+    — tests that consecutive-month-dependent logic (revenue trend, customer
+    count trend, churn silence window) doesn't crash or silently miscount
+    across a gap with zero bank activity."""
+    if not txns:
+        return txns, {
+            "flag_type": "missing_month_gap", "description": "No transactions to gap.",
+            "triggering_transaction_ids": [],
+        }
+    months_present = sorted({(t.date.year, t.date.month) for t in txns})
+    if len(months_present) < 3:
+        return txns, {
+            "flag_type": "missing_month_gap",
+            "description": "Fewer than 3 months present — no middle month to remove.",
+            "triggering_transaction_ids": [],
+        }
+    gap_yr, gap_mo = months_present[len(months_present) // 2]
+    removed_ids = [t.txn_id for t in txns if (t.date.year, t.date.month) == (gap_yr, gap_mo)]
+    remaining = [t for t in txns if (t.date.year, t.date.month) != (gap_yr, gap_mo)]
+    flag = {
+        "flag_type": "missing_month_gap",
+        "description": (
+            f"Removed all {len(removed_ids)} transactions from {gap_yr}-{gap_mo:02d} "
+            "(middle of the statement period) to simulate a month with zero bank activity."
+        ),
+        "triggering_transaction_ids": removed_ids,
+    }
+    return remaining, flag
+
+
+def _inject_fx_inflow(txns, company, bank, start):
+    """Add export/SWIFT-remittance-style revenue narrations — the credited
+    amount is INR (Indian banks convert FX inflows before crediting a regular
+    current account), but the narration text signals a foreign-currency
+    source. Tests that the categoriser still recognises these as REVENUE
+    despite non-standard narration text, and that cash-focused compliance
+    rules (§269ST, PMLA) correctly do not fire on wire transfers."""
+    new_txns = []
+    for yr, mo in _months(start, 2):
+        amt = Decimal(str(random.randint(300, 900) * 1000))
+        d = _rand_day(yr, mo, 5, 25)
+        if bank == "hdfc":
+            desc = (f"SWIFT CR-{_bcode()}-EXPORT RECEIPT USD {random.randint(3000, 9000)}-"
+                     f"INV{random.randint(1000, 9999)}")
+        else:
+            desc = f"INWARD REMITTANCE CR-{_bcode()}-FCRA EXPORT USD {random.randint(3000, 9000)}"
+        t = _make_txn(d, desc, credit=amt, category="REVENUE", anomaly_flags=["fx_inflow"])
+        new_txns.append(t)
+    flag = {
+        "flag_type": "fx_inflow",
+        "description": (
+            f"Added {len(new_txns)} foreign-currency export-remittance revenue transactions "
+            "(INR-converted amount, SWIFT/FCRA narration) — tests categorisation robustness "
+            "against non-standard revenue narrations."
+        ),
+        "triggering_transaction_ids": [t.txn_id for t in new_txns],
+    }
+    return txns + new_txns, flag
+
+
 _FLAG_INJECTORS = {
     "structuring":                    _inject_structuring,
     "round_tripping":                 _inject_round_tripping,
@@ -1207,6 +1345,11 @@ _FLAG_INJECTORS = {
     "compliance_pmla_cash":           _inject_compliance_pmla_cash,
     "compliance_rpt_concentration":   _inject_compliance_rpt_concentration,
     "compliance_cash_loan":           _inject_compliance_cash_loan,
+    # Wave 4.3 — hard-case hardening scenarios
+    "aggregator_dominated_revenue":   _inject_aggregator_dominated,
+    "inter_account_transfer":         _inject_inter_account_transfers,
+    "missing_month_gap":              _inject_missing_month_gap,
+    "fx_inflow":                      _inject_fx_inflow,
 }
 
 _GENERATORS = {
@@ -1315,13 +1458,13 @@ def _render_hdfc(company: _Company, txns: list[_Txn], opening: Decimal, path: Pa
     table_data = [_HDFC_HEADERS]
     table_data.append([
         period_start.strftime("%d/%m/%y"), _narr("Opening Balance"), "",
-        period_start.strftime("%d/%m/%y"), "", _inr(opening), _inr(opening),
+        period_start.strftime("%d/%m/%y"), "", _inr(opening), _inr_signed(opening),
     ])
     for t in txns:
         table_data.append([
             t.date.strftime("%d/%m/%y"), _narr(t.description), t.ref_no,
             t.value_date.strftime("%d/%m/%y"),
-            _inr(t.debit), _inr(t.credit), _inr(t.balance),
+            _inr(t.debit), _inr(t.credit), _inr_signed(t.balance),
         ])
 
     closing  = txns[-1].balance if txns else opening
@@ -1335,7 +1478,7 @@ def _render_hdfc(company: _Company, txns: list[_Txn], opening: Decimal, path: Pa
         _p(f"<b>Opening Balance:</b> {_inr(opening)}  "
            f"<b>Total Withdrawals:</b> {_inr(total_dr)}  "
            f"<b>Total Deposits:</b> {_inr(total_cr)}  "
-           f"<b>Closing Balance:</b> {_inr(closing)}"),
+           f"<b>Closing Balance:</b> {_inr_signed(closing)}"),
     ]
     doc.build(story)
 
@@ -1371,7 +1514,7 @@ def _render_icici(company: _Company, txns: list[_Txn], opening: Decimal, path: P
     table_data = [_ICICI_HEADERS]
     table_data.append([
         "0", period_start.strftime("%d-%m-%Y"), period_start.strftime("%d-%m-%Y"),
-        _narr("Opening Balance"), "", "", _inr(opening), _inr(opening),
+        _narr("Opening Balance"), "", "", _inr(opening), _inr_signed(opening),
     ])
     for idx, t in enumerate(txns, start=1):
         table_data.append([
@@ -1382,13 +1525,13 @@ def _render_icici(company: _Company, txns: list[_Txn], opening: Decimal, path: P
             t.ref_no,
             _inr(t.debit),
             _inr(t.credit),
-            _inr(t.balance),
+            _inr_signed(t.balance),
         ])
 
     story.append(Table(table_data, colWidths=_ICICI_COLS, repeatRows=1,
                        style=_table_style(len(table_data), has_sno=True)))
     closing = txns[-1].balance if txns else opening
-    story += [Spacer(1, 4 * mm), _p(f"<b>Closing Balance:</b> {_inr(closing)}")]
+    story += [Spacer(1, 4 * mm), _p(f"<b>Closing Balance:</b> {_inr_signed(closing)}")]
     doc.build(story)
 
 

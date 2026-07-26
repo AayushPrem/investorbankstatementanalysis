@@ -98,6 +98,16 @@ class TestCashLimit269ST:
 # Rule 2 — GST consistency
 # ─────────────────────────────────────────────────────────────────────────────
 
+class TestGSTConsistencyDisclaimer:
+    """Wave 3.3 — GST rule must carry the same 'heuristic, not a statutory
+    determination' disclaimer the PMLA and related-party rules already carry."""
+
+    def test_description_carries_heuristic_disclaimer(self) -> None:
+        rule = GSTPaymentConsistency()
+        assert "heuristic" in rule.description.lower()
+        assert "not a statutory" in rule.description.lower()
+
+
 class TestGSTConsistency:
     def test_revenue_with_gst_no_exception(self):
         # Revenue below ₹40L annual gate — exercises the early-exit path only
@@ -352,7 +362,9 @@ class TestComplianceAnalyst:
         assert isinstance(report, ComplianceReport)
 
     def test_clean_statement_minimal_exceptions(self):
-        # Healthy statement with GST, TDS, no cash
+        # Healthy statement with GST, TDS, no cash — genuinely below every
+        # rule's trigger threshold, so it must produce ZERO exceptions, not
+        # just "some ComplianceReport object" (Wave 4.1).
         doc = _doc(
             _txn("r1", credit=500000, cat=TransactionCategory.REVENUE, date=datetime.date(2024, 1, 15)),
             _txn("g1", debit=90000, desc="GST PAYMENT", date=datetime.date(2024, 1, 20)),
@@ -360,6 +372,9 @@ class TestComplianceAnalyst:
         )
         report = ComplianceAnalyst(llm_enabled=False).analyse(doc, INDIA_RULES)
         assert isinstance(report, ComplianceReport)
+        assert report.exceptions == []
+        assert report.has_exceptions is False
+        assert report.by_severity == {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
 
     def test_sorted_high_first(self):
         doc = _doc(_txn("t1", credit=250000, desc="CASH DEP-VENDOR A"))

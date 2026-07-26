@@ -32,8 +32,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-from analysis.customer_analytics import CustomerAnalyticsReport
+from analysis.customer_analytics import CustomerAnalyticsReport, aggregator_caveat_text
 from analysis.financial_analyst import FinancialMetrics
+from analysis.financial_health_alerts import classify_burn_ratio, classify_concentration, classify_nrr
 from analysis.risk import RiskReport, Severity
 from schema.canonical import StatementDocument
 
@@ -290,7 +291,7 @@ def _sheet1_summary(wb: Workbook, result: AnalysisResult) -> None:
     row += 1
     top_flags = r.flags[:6]
     if not top_flags:
-        ws.cell(row=row, column=1, value="No risk flags detected — statement appears clean.").font = _hfont(color="166534")
+        ws.cell(row=row, column=1, value="No flags detected in scope — see Red Flags sheet for detector coverage.").font = _hfont(color="166534")
         row += 1
     else:
         for flag in top_flags:
@@ -360,17 +361,18 @@ def _sheet2_financial_health(wb: Workbook, result: AnalysisResult) -> None:
             ws.cell(row=i, column=5, value="—").alignment = _center()
             ws.cell(row=i, column=6, value="First month — no prior month to compare").font = _hfont(color="6B7280", size=9)
 
-        # Burn note
+        # Burn note — bands shared with analysis/financial_health_alerts.py
         burn_ratio = float(ms.burn) / float(ms.revenue) if ms.revenue > _ZERO else None
         if burn_ratio is not None:
-            if burn_ratio < 0.7:
-                burn_note = f"Burn/Revenue = {burn_ratio:.0%} — healthy margin profile"
-            elif burn_ratio < 1.0:
-                burn_note = f"Burn/Revenue = {burn_ratio:.0%} — approaching break-even"
+            band = classify_burn_ratio(ms.burn, ms.revenue)
+            if band == "normal":
+                burn_note = f"Burn/Revenue = {burn_ratio:.0%} — within normal range"
+            elif band == "high":
+                burn_note = f"Burn/Revenue = {burn_ratio:.0%} — spending significantly more than earned"
             else:
-                burn_note = f"Burn/Revenue = {burn_ratio:.0%} — spending exceeds revenue"
+                burn_note = f"Burn/Revenue = {burn_ratio:.0%} — unsustainable burn relative to revenue"
             ws.cell(row=i, column=7, value=burn_note).font = _hfont(
-                color=_GREEN_F if burn_ratio < 0.7 else (_AMBER_F if burn_ratio < 1.0 else _RED_F),
+                color=_GREEN_F if band == "normal" else (_AMBER_F if band == "high" else _RED_F),
                 size=9)
 
     # Conditional formatting: MoM growth column
@@ -432,7 +434,7 @@ def _sheet3_red_flags(wb: Workbook, result: AnalysisResult) -> None:
     _write_header_row(ws, 1, headers, widths)
 
     if not result.risk_report.flags:
-        ws.cell(row=2, column=1, value="No risk flags detected — statement appears clean.").font = _hfont(color="166534")
+        ws.cell(row=2, column=1, value="No flags detected across the 6 automated detectors in scope.").font = _hfont(color="166534")
         return
 
     for i, flag in enumerate(result.risk_report.flags, 2):
@@ -494,6 +496,14 @@ def _sheet4_customer_analytics(wb: Workbook, result: AnalysisResult) -> None:
     ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
     row += 2
 
+    caveat = aggregator_caveat_text(ca)
+    if caveat:
+        cell = ws.cell(row=row, column=1, value=caveat)
+        cell.font = _hfont(color=_RED_F, size=9, bold=True)
+        cell.alignment = _left()
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+        row += 2
+
     # — Active customers per month —
     _write_section_row(ws, row, "ACTIVE CUSTOMERS PER MONTH")
     row += 1
@@ -531,7 +541,7 @@ def _sheet4_customer_analytics(wb: Workbook, result: AnalysisResult) -> None:
     row += 1
     note2 = ws.cell(row=row, column=1, value=(
         "NRR measures how much revenue existing customers generate next month vs this month. "
-        "≥110% = expansion (upsell/price increases offset churn) · 100% = stable · <100% = net revenue shrinkage."
+        "≥100% = stable or expanding · 85-99% = below par · 70-84% = contracting · <70% = severe contraction."
     ))
     note2.font = _hfont(color="6B7280", size=8)
     note2.alignment = _left()
@@ -546,18 +556,17 @@ def _sheet4_customer_analytics(wb: Workbook, result: AnalysisResult) -> None:
         c = ws.cell(row=row, column=2, value=nrr)
         c.number_format = "0.0%"
         c.alignment = _right()
-        if nrr >= 1.1:
-            interp = "Excellent — existing customers expanding wallet share"
-            color = _GREEN_F
-        elif nrr >= 1.0:
-            interp = "Stable — churn balanced by expansion; room to grow"
-            color = _TEAL_F
-        elif nrr >= 0.9:
-            interp = "Caution — losing existing revenue; investigate churn causes"
-            color = _AMBER_F
+        band = classify_nrr(nrr)
+        if band == "healthy" and nrr >= 1.1:
+            interp, color = "Excellent — existing customers expanding wallet share", _GREEN_F
+        elif band == "healthy":
+            interp, color = "Stable — churn balanced by expansion; room to grow", _TEAL_F
+        elif band == "below_par":
+            interp, color = "Below par — not yet generating net expansion from existing customers", _AMBER_F
+        elif band == "contraction":
+            interp, color = "Contraction — losing existing revenue; investigate churn causes", _AMBER_F
         else:
-            interp = "Critical — severe revenue shrinkage from existing base"
-            color = _RED_F
+            interp, color = "Severe contraction — critical revenue shrinkage from existing base", _RED_F
         ic = ws.cell(row=row, column=3, value=interp)
         ic.font = _hfont(color=color, size=9)
         ic.alignment = _left()
@@ -644,7 +653,7 @@ def _sheet4_customer_analytics(wb: Workbook, result: AnalysisResult) -> None:
     row += 1
     note5 = ws.cell(row=row, column=1, value=(
         "Measures how much revenue is controlled by the top customers each month. "
-        "Top-3 share >80% = high concentration risk. Declining trend = healthy diversification."
+        "Top-3 share >80% = high concentration risk, >60% = moderate. Declining trend = healthy diversification."
     ))
     note5.font = _hfont(color="6B7280", size=8)
     note5.alignment = _left()
@@ -658,11 +667,11 @@ def _sheet4_customer_analytics(wb: Workbook, result: AnalysisResult) -> None:
             c = ws.cell(row=row, column=col, value=val)
             c.number_format = "0.0%"
             c.alignment = _right()
-        signal = "High concentration risk" if pt.top3_share > 0.8 else (
-            "Moderate — monitor" if pt.top3_share > 0.5 else "Well diversified")
+        band = classify_concentration(pt.top3_share)
+        signal = {"high": "High concentration risk", "medium": "Moderate — monitor",
+                  "low": "Well diversified"}[band]
         sc = ws.cell(row=row, column=4, value=signal)
-        sc.font = _hfont(color=_RED_F if pt.top3_share > 0.8 else (
-            _AMBER_F if pt.top3_share > 0.5 else _GREEN_F), size=9)
+        sc.font = _hfont(color={"high": _RED_F, "medium": _AMBER_F, "low": _GREEN_F}[band], size=9)
         row += 1
 
 
@@ -834,6 +843,7 @@ _PS_LABEL    = _ps("VCLbl",    "Helvetica",        7, 10, _RL_MID,  TA_LEFT)
 _PS_VALUE    = _ps("VCVal",    "Helvetica-Bold",   9, 12, _RL_BLUE, TA_RIGHT)
 _PS_BODY     = _ps("VCBody",   "Helvetica",        8, 11, rl_colors.black, TA_LEFT)
 _PS_EXPL     = _ps("VCExpl",   "Helvetica",        7.5, 10, _RL_MID, TA_LEFT)
+_PS_CAVEAT   = _ps("VCCaveat", "Helvetica-Bold",   8.5, 11, _RL_RED, TA_LEFT)
 _PS_FOOTER   = _ps("VCFoot",   "Helvetica",        7,  9, _RL_MID,  TA_CENTER)
 _PS_FLAG_HDR = _ps("VCFlagH",  "Helvetica-Bold",   8, 11, rl_colors.black, TA_LEFT)
 _PS_FLAG     = _ps("VCFlag",   "Helvetica",        8, 11, rl_colors.black, TA_LEFT)
@@ -1081,13 +1091,17 @@ def _build_pdf(result: AnalysisResult) -> bytes:
     ))
     story.append(Spacer(1, 6))
 
+    caveat = aggregator_caveat_text(ca)
+    if caveat:
+        story.append(Paragraph(caveat, _PS_CAVEAT))
+        story.append(Spacer(1, 6))
+
     # NRR trend table
     if ca.nrr_per_month:
         story.append(Paragraph("Net Revenue Retention (NRR) by Month", _PS_SECTION))
         story.append(Paragraph(
             "NRR measures what happens to revenue from existing customers over time. "
-            "≥110% = existing customers spending more (best-in-class SaaS). "
-            "100% = stable. <100% = losing wallet share — expansion must outpace churn.",
+            "≥100% = stable or expanding · 85-99% = below par · 70-84% = contracting · <70% = severe contraction.",
             _PS_EXPL
         ))
         story.append(Spacer(1, 3))
@@ -1097,12 +1111,15 @@ def _build_pdf(result: AnalysisResult) -> bytes:
             for i, h in enumerate(["Month", "NRR", "Signal", "Implication for Investors"])
         ]]
         for ym, nrr in sorted(ca.nrr_per_month.items()):
-            if nrr >= 1.1:
+            band = classify_nrr(nrr)
+            if band == "healthy" and nrr >= 1.1:
                 sig, imp, col = "Excellent", "Existing customers expanding — strong upsell or pricing power", _RL_GREEN
-            elif nrr >= 1.0:
+            elif band == "healthy":
                 sig, imp, col = "Stable", "Churn and expansion balanced — focus on upsell to push >110%", _RL_TEAL
-            elif nrr >= 0.9:
-                sig, imp, col = "Caution", "Net revenue shrinkage — existing base contracting faster than it expands", _RL_AMBER
+            elif band == "below_par":
+                sig, imp, col = "Below par", "Not yet generating net expansion from existing customers", _RL_AMBER
+            elif band == "contraction":
+                sig, imp, col = "Contraction", "Net revenue shrinkage — existing base contracting faster than it expands", _RL_AMBER
             else:
                 sig, imp, col = "Critical", "Severe contraction — even perfect new sales cannot offset existing losses", _RL_RED
             nrr_data.append([
@@ -1229,7 +1246,7 @@ def _build_pdf(result: AnalysisResult) -> bytes:
 
     if not r.flags:
         story.append(Paragraph(
-            "No risk flags detected. Statement appears clean across all 6 detectors: "
+            "No flags detected in scope across the 6 automated detectors: "
             "structuring, round-tripping, revenue spikes/drains, "
             "customer concentration, round amounts, and founder extraction.",
             _ps("CLEAN", color=_RL_GREEN, size=9)

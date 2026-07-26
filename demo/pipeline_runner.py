@@ -32,11 +32,11 @@ from jurisdictions.india import IndiaJurisdictionModule
 from pipeline.customer_identity import CustomerIdentityResolver
 from pipeline.normaliser import Normaliser
 from pipeline.related_party import Affiliate, RelatedPartyTagger
-from pipeline.validator import Validator
+from pipeline.validator import ValidationFailedError, Validator
 from reports.angel_lens import AngelLensReport, _verdict
 from reports.vc_lens import AnalysisResult, VCLensReport
 from reports.workbench_lens import WorkbenchAnalysisResult, WorkbenchLensReport
-from schema.canonical import StatementDocument
+from schema.canonical import StatementDocument, ValidationStatus
 
 
 @dataclass
@@ -79,7 +79,9 @@ def run_pipeline_on_bytes(
         # ── Sprint 1 stages ──────────────────────────────────────────────
         raw = DigitalPDFAdapter().extract(pdf_path)
         doc = Normaliser().normalise(raw)
-        Validator().validate(doc)
+        validation_report = Validator().validate(doc)
+        if validation_report.status == ValidationStatus.FAILED:
+            raise ValidationFailedError(validation_report)
         doc, _ = Categoriser(llm_enabled=True).categorise(doc)
         metrics = FinancialAnalyst().analyse(doc)
 

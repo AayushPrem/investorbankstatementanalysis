@@ -306,3 +306,19 @@ class TestErrorHandling:
         fake.write_bytes(b"this is not a PDF")
         with pytest.raises(AdapterError):
             DigitalPDFAdapter().extract(fake)
+
+    def test_unsupported_bank_raises_clear_error_not_empty_result(self, tmp_root: Path) -> None:
+        """Wave 4.2 — a PDF that isn't HDFC or ICICI must raise a clear,
+        actionable error rather than silently extracting 0 transactions and
+        letting the pipeline continue to produce an empty, misleading report."""
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+
+        other_bank_pdf = tmp_root / "sbi_statement.pdf"
+        c = canvas.Canvas(str(other_bank_pdf), pagesize=A4)
+        c.drawString(50, 800, "State Bank of India")
+        c.drawString(50, 780, "Account Statement")
+        c.save()
+
+        with pytest.raises(AdapterError, match="HDFC and ICICI"):
+            DigitalPDFAdapter().extract(other_bank_pdf)

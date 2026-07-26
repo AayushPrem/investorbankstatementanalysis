@@ -38,7 +38,9 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from analysis.customer_analytics import aggregator_caveat_text
 from analysis.financial_analyst import FinancialMetrics, MonthlyStats
+from analysis.financial_health_alerts import classify_churn, classify_concentration, classify_nrr, classify_runway
 from schema.canonical import StatementDocument
 
 log = logging.getLogger(__name__)
@@ -149,10 +151,10 @@ def _verdict_rationale(
     reason = " · ".join(parts) if parts else "based on available financial data"
 
     if label == "INVESTABLE":
-        return f"Qualifies for investment consideration — {reason}"
+        return f"Meets automated screening criteria for further diligence — {reason}"
     if label == "MONITOR":
-        return f"Borderline — {reason}; track for 60–90 days before committing"
-    return f"High risk — {reason}; significant concerns require resolution first"
+        return f"Borderline — {reason}; track for 60–90 days before further diligence"
+    return f"High risk — {reason}; significant concerns warrant resolution before further diligence"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,8 +218,9 @@ def _signals(
         pct = float(growth) * 100
         if growth > Decimal("0.05"):
             lines.append(("OK",
-                f"Revenue growing <b>{pct:+.1f}%/mo</b> — well above the 5% threshold signalling "
-                "sustainable product-market fit. At this rate, ARR doubles in under 12 months."))
+                f"Revenue growing <b>{pct:+.1f}%/mo</b> — well above the 5% threshold that may "
+                "indicate strong traction. If sustained, ARR would double in under 12 months — "
+                "verify this growth rate holds across a longer window before relying on it."))
         elif growth >= _ZERO:
             lines.append(("!",
                 f"Revenue <b>flat ({pct:+.1f}%/mo)</b> — growth has stalled. "
@@ -236,7 +239,7 @@ def _signals(
     if metrics.is_profitable:
         lines.append(("OK",
             "Business is <b>cash-flow positive</b> — revenue exceeds all operating costs. "
-            "This removes dilution pressure and gives the founder negotiating power."))
+            "This reduces near-term dilution pressure and may strengthen the founder's negotiating position."))
     else:
         excess = _fmt_amount(metrics.avg_monthly_burn - metrics.avg_monthly_revenue)
         lines.append(("!",
@@ -244,21 +247,26 @@ def _signals(
             "Pre-revenue or early-stage companies must show a credible path to breakeven — "
             "verify the cost structure is investment-driven, not structural."))
 
-    # 3. Runway
+    # 3. Runway — bands shared with analysis/financial_health_alerts.py
     runway = metrics.runway_months
+    band = classify_runway(runway)
     if runway is None:
         lines.append(("OK",
             "<b>No runway risk</b> — self-sustaining on operating revenue. "
-            "This is rare and highly attractive; removes funding dependency."))
-    elif runway >= Decimal("12"):
+            "This removes funding dependency, which is uncommon at this stage and worth noting."))
+    elif band == "healthy" and runway >= Decimal("12"):
         lines.append(("OK",
             f"<b>{_fmt_runway(runway)} runway</b> — comfortable time to hit next milestones "
             "before a fundraise. With >12 months, the company can negotiate from strength."))
-    elif runway >= Decimal("6"):
+    elif band == "healthy":
         lines.append((" ",
             f"<b>{_fmt_runway(runway)} runway</b> — plan a fundraise within 3–4 months "
             "to avoid negotiating under pressure. Adequate but not comfortable."))
-    elif runway >= Decimal("3"):
+    elif band == "short":
+        lines.append((" ",
+            f"<b>{_fmt_runway(runway)} runway</b> — fundraising conversations should already be "
+            "underway given typical 3–6 month closing timelines. Not yet critical."))
+    elif band == "low":
         lines.append(("!",
             f"<b>{_fmt_runway(runway)} runway</b> — urgent fundraise required. "
             "Founders are likely distracted by survival; operational risk is elevated."))
@@ -268,38 +276,47 @@ def _signals(
             "Company may not survive to deploy invested capital. "
             "Milestone-based tranches with an operational bridge are strongly recommended."))
 
-    # 4. Customer concentration
-    if metrics.top_customer_revenue_pct is not None:
-        pct = float(metrics.top_customer_revenue_pct) * 100
-        if pct >= 70:
-            lines.append(("!!",
-                f"<b>Top customer: {pct:.0f}% of revenue</b> — extreme concentration. "
-                "Loss of this one client would be existential. Treat as single-client dependency risk."))
-        elif pct >= 50:
-            lines.append(("!",
-                f"<b>Top customer: {pct:.0f}% of revenue</b> — high concentration. "
-                "Diversification is critical; negotiate multi-year contracts with this customer."))
-        else:
-            lines.append(("OK",
-                f"<b>Top customer: {pct:.0f}% of revenue</b> — healthy diversification. "
-                "No single client can cause existential revenue loss if churned."))
-
-    # 5. Customer analytics (NRR, churn) — only if available
+    # 4. Customer concentration (top-3 share) + 5. Customer analytics (NRR, churn)
+    # — bands shared with analysis/financial_health_alerts.py; both need `ca`.
     if ca is not None:
+        caveat = aggregator_caveat_text(ca)
+        if caveat:
+            lines.append(("!!", f"<b>{caveat}</b>"))
+
+        if ca.concentration_trajectory:
+            top3 = ca.concentration_trajectory[-1].top3_share
+            pct = top3 * 100
+            conc_band = classify_concentration(top3)
+            if conc_band == "high":
+                lines.append(("!!",
+                    f"<b>Top 3 customers: {pct:.0f}% of revenue</b> — high concentration. "
+                    "Losing any one of them would be a material, possibly existential, revenue shock. "
+                    "Verify contract duration and exclusivity terms."))
+            elif conc_band == "medium":
+                lines.append(("!",
+                    f"<b>Top 3 customers: {pct:.0f}% of revenue</b> — moderate concentration. "
+                    "Worth monitoring; diversification would reduce risk."))
+            else:
+                lines.append(("OK",
+                    f"<b>Top 3 customers: {pct:.0f}% of revenue</b> — healthy diversification. "
+                    "No small group of clients can cause existential revenue loss if churned."))
+
         nrr_vals = list(ca.nrr_per_month.values())
         if nrr_vals:
             nrr = nrr_vals[-1]
             nrr_pct = nrr * 100
-            if nrr >= 1.1:
+            nrr_band = classify_nrr(nrr)
+            if nrr_band == "healthy" and nrr >= 1.1:
                 lines.append(("OK",
                     f"<b>NRR: {nrr_pct:.0f}%</b> — net revenue retention exceeds 100%, "
                     "meaning existing customers are spending more over time (expansion revenue). "
-                    "This is the hallmark of a compounding SaaS business."))
-            elif nrr >= 1.0:
+                    "This is a positive signal for compounding revenue, though worth confirming "
+                    "it isn't driven by a small number of large accounts."))
+            elif nrr_band == "healthy":
                 lines.append(("OK",
                     f"<b>NRR: {nrr_pct:.0f}%</b> — stable existing customer base. "
                     "Churn is balanced by expansion. Improving upsell would move this above 110%."))
-            elif nrr >= 0.9:
+            elif nrr_band in ("below_par", "contraction"):
                 lines.append(("!",
                     f"<b>NRR: {nrr_pct:.0f}%</b> — existing customers are contracting. "
                     "Every month, the business loses ground even without gaining new customers."))
@@ -310,7 +327,10 @@ def _signals(
 
         churn_count = len(ca.churn_events)
         if churn_count > 0:
-            lines.append(("!",
+            peak_active = max(ca.monthly_active_customers.values(), default=1)
+            churn_band = classify_churn(churn_count / max(peak_active, 1))
+            prefix = "!!" if churn_band == "high" else "!"
+            lines.append((prefix,
                 f"<b>{churn_count} churn event(s) detected</b> — "
                 f"customers silent for 3+ consecutive months. "
                 "Request exit interviews and verify whether revenue is shifting to competitors."))

@@ -19,7 +19,9 @@ from analysis.customer_analytics import (
     _compute_cohort_retention,
     _compute_concentration,
     _detect_regularity_alerts,
+    aggregator_caveat_text,
 )
+from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
 from schema.canonical import (
     CanonicalTransaction,
     SourceReference,
@@ -48,24 +50,33 @@ def _txn(
     customer_id: str | None = None,
     month: int = 1,
     day: int = 15,
+    anomaly_flags: list[str] | None = None,
 ) -> CanonicalTransaction:
     d = datetime.date(2024, month, day)
     if debit is not None:
         return CanonicalTransaction(
             transaction_id=tid, date=d, description=tid, debit=Decimal(str(debit)),
             balance=Decimal("0"), source_reference=_SRC, category=category,
-            customer_id=customer_id,
+            customer_id=customer_id, anomaly_flags=anomaly_flags or [],
         )
     return CanonicalTransaction(
         transaction_id=tid, date=d, description=tid, credit=Decimal(str(credit or 0)),
         balance=Decimal("0"), source_reference=_SRC, category=category,
-        customer_id=customer_id,
+        customer_id=customer_id, anomaly_flags=anomaly_flags or [],
     )
 
 
 def _rev(amount: int | str, cid: str, tid: str, *, month: int = 1, day: int = 15) -> CanonicalTransaction:
     return _txn(tid, credit=amount, category=TransactionCategory.REVENUE,
                 customer_id=cid, month=month, day=day)
+
+
+def _agg_rev(amount: int | str, tid: str, *, month: int = 1, day: int = 15) -> CanonicalTransaction:
+    """A REVENUE transaction as the resolver leaves an aggregator settlement:
+    no customer_id, tagged with the aggregator_settlement anomaly flag."""
+    return _txn(tid, credit=amount, category=TransactionCategory.REVENUE,
+                customer_id=None, month=month, day=day,
+                anomaly_flags=[ANOMALY_FLAG_AGGREGATOR_SETTLEMENT])
 
 
 def _doc(*txns: CanonicalTransaction) -> StatementDocument:
@@ -370,41 +381,56 @@ class TestChurnDetection:
 
 class TestNRR:
     def test_nrr_expansion_above_1(self) -> None:
-        # Jan: A=100K, B=100K; Feb: A=120K, B=100K → monthly=1.10, annualised=1.10^12
+        # Jan: A=100K, B=100K; Feb: A=120K, B=100K → period-over-period = 220K/200K = 1.10
         doc = _doc(
             _rev(100000, "A", "tA1", month=1), _rev(100000, "B", "tB1", month=1),
             _rev(120000, "A", "tA2", month=2), _rev(100000, "B", "tB2", month=2),
         )
         r = CustomerAnalyticsAnalyst().analyse(doc)
-        assert r.nrr_per_month.get("2024-02") == pytest.approx(1.10 ** 12, rel=1e-4)
+        assert r.nrr_per_month.get("2024-02") == pytest.approx(1.10, rel=1e-4)
 
     def test_nrr_contraction_below_1(self) -> None:
-        # Jan: A=100K, B=100K; Feb: A=80K, B=80K → monthly=0.80, annualised=0.80^12
+        # Jan: A=100K, B=100K; Feb: A=80K, B=80K → period-over-period = 160K/200K = 0.80
         doc = _doc(
             _rev(100000, "A", "tA1", month=1), _rev(100000, "B", "tB1", month=1),
             _rev(80000, "A", "tA2", month=2), _rev(80000, "B", "tB2", month=2),
         )
         r = CustomerAnalyticsAnalyst().analyse(doc)
-        assert r.nrr_per_month.get("2024-02") == pytest.approx(0.80 ** 12, rel=1e-4)
+        assert r.nrr_per_month.get("2024-02") == pytest.approx(0.80, rel=1e-4)
 
     def test_nrr_churn_reduces_below_1(self) -> None:
-        # Jan: A=100K, B=100K; Feb: only A=100K (B churns) → monthly=0.50, annualised=0.50^12
+        # Jan: A=100K, B=100K; Feb: only A=100K (B churns) → period-over-period = 100K/200K = 0.50
         doc = _doc(
             _rev(100000, "A", "tA1", month=1), _rev(100000, "B", "tB1", month=1),
             _rev(100000, "A", "tA2", month=2),
         )
         r = CustomerAnalyticsAnalyst().analyse(doc)
-        assert r.nrr_per_month.get("2024-02") == pytest.approx(0.50 ** 12, rel=1e-4)
+        assert r.nrr_per_month.get("2024-02") == pytest.approx(0.50, rel=1e-4)
 
     def test_nrr_new_customer_not_counted(self) -> None:
         # Jan: A=100K; Feb: A=100K + new customer B=50K
-        # NRR only counts cohort from Jan (only A) → monthly=1.0, annualised=1.0
+        # NRR only counts cohort from Jan (only A) → 100K/100K = 1.0
         doc = _doc(
             _rev(100000, "A", "tA1", month=1),
             _rev(100000, "A", "tA2", month=2), _rev(50000, "B", "tB2", month=2),
         )
         r = CustomerAnalyticsAnalyst().analyse(doc)
         assert r.nrr_per_month.get("2024-02") == pytest.approx(1.0)
+
+    def test_nrr_exact_value_hand_constructed(self) -> None:
+        # Hand-constructed 3-customer, 2-month cohort:
+        #   Jan cohort revenue: A=100K, B=200K, C=50K → 350K total
+        #   Feb revenue from that same cohort: A=150K, B=100K, C=0 (churned) → 250K total
+        #   Expected NRR = 250K / 350K = 0.714285714...
+        doc = _doc(
+            _rev(100000, "A", "tA1", month=1),
+            _rev(200000, "B", "tB1", month=1),
+            _rev(50000, "C", "tC1", month=1),
+            _rev(150000, "A", "tA2", month=2),
+            _rev(100000, "B", "tB2", month=2),
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.nrr_per_month.get("2024-02") == pytest.approx(250000 / 350000, rel=1e-9)
 
     def test_nrr_per_month_has_one_entry_per_month_pair(self) -> None:
         doc = _doc(
@@ -682,3 +708,104 @@ class TestIntegration:
         for pt in r.concentration_trajectory:
             assert isinstance(pt.top3_share, float)
             assert isinstance(pt.top10_share, float)
+
+
+# ---------------------------------------------------------------------------
+# TestAggregatorRevenue (Wave 3.1)
+# ---------------------------------------------------------------------------
+
+class TestAggregatorRevenue:
+    def test_pct_computed_correctly(self) -> None:
+        # 60K real customer revenue + 40K aggregator revenue = 40% aggregator
+        doc = _doc(
+            _rev(60000, "A", "tA1", month=1),
+            _agg_rev(40000, "agg1", month=1),
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.aggregator_revenue_pct == pytest.approx(0.4)
+
+    def test_zero_pct_when_no_aggregator_revenue(self) -> None:
+        doc = _doc(_rev(60000, "A", "tA1", month=1))
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.aggregator_revenue_pct == 0.0
+        assert r.is_aggregator_dominated is False
+
+    def test_dominated_flag_at_threshold(self) -> None:
+        # Exactly 30% aggregator — at the dominance threshold, should be True
+        doc = _doc(
+            _rev(70000, "A", "tA1", month=1),
+            _agg_rev(30000, "agg1", month=1),
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.aggregator_revenue_pct == pytest.approx(0.3)
+        assert r.is_aggregator_dominated is True
+
+    def test_not_dominated_below_threshold(self) -> None:
+        doc = _doc(
+            _rev(90000, "A", "tA1", month=1),
+            _agg_rev(10000, "agg1", month=1),
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.is_aggregator_dominated is False
+
+    def test_aggregator_revenue_excluded_from_active_customer_counts(self) -> None:
+        doc = _doc(
+            _rev(60000, "A", "tA1", month=1),
+            _agg_rev(500000, "agg1", month=1),  # huge amount, must not inflate/appear as a customer
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.monthly_active_customers == {"2024-01": 1}
+
+    def test_aggregator_revenue_excluded_from_concentration(self) -> None:
+        doc = _doc(
+            _rev(10000, "A", "tA1", month=1),
+            _agg_rev(990000, "agg1", month=1),  # would dominate concentration if counted
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        # Only "A" is in the concentration calc — must show 100% share, not
+        # be swamped/distorted by the (excluded) aggregator amount.
+        assert r.concentration_trajectory[0].top3_share == pytest.approx(1.0)
+
+    def test_aggregator_revenue_never_produces_churn_events(self) -> None:
+        # Aggregator txns have no customer_id at all, so per-customer churn
+        # logic (which keys off customer_id) can never fire for them.
+        doc = _doc(
+            _agg_rev(50000, "agg1", month=1),
+            _agg_rev(50000, "agg2", month=2),
+            _agg_rev(50000, "agg3", month=3),
+            _agg_rev(50000, "agg4", month=4),
+            _agg_rev(50000, "agg5", month=5),
+        )
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.churn_events == []
+
+    def test_all_aggregator_statement_still_reports_pct_not_empty(self) -> None:
+        """100%-aggregator-settled statement must not look like 'no revenue
+        data' — aggregator_revenue_pct must still be populated even though
+        every other metric is empty (no customer_id-tagged revenue at all)."""
+        doc = _doc(_agg_rev(500000, "agg1", month=1))
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.aggregator_revenue_pct == pytest.approx(1.0)
+        assert r.is_aggregator_dominated is True
+        assert r.monthly_active_customers == {}
+
+    def test_no_revenue_at_all_pct_is_zero(self) -> None:
+        doc = _doc()
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert r.aggregator_revenue_pct == 0.0
+
+
+class TestAggregatorCaveatText:
+    def test_none_when_not_dominated(self) -> None:
+        doc = _doc(_rev(90000, "A", "tA1", month=1), _agg_rev(10000, "agg1", month=1))
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        assert aggregator_caveat_text(r) is None
+
+    def test_text_when_dominated(self) -> None:
+        doc = _doc(_rev(40000, "A", "tA1", month=1), _agg_rev(60000, "agg1", month=1))
+        r = CustomerAnalyticsAnalyst().analyse(doc)
+        text = aggregator_caveat_text(r)
+        assert text is not None
+        assert "60%" in text
+        assert "aggregator-settled" in text
+        assert "not visible" in text

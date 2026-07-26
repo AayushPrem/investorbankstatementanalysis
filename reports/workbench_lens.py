@@ -30,7 +30,8 @@ from reportlab.platypus import (
 )
 
 from analysis.compliance import ComplianceReport
-from analysis.customer_analytics import CustomerAnalyticsReport
+from analysis.customer_analytics import CustomerAnalyticsReport, aggregator_caveat_text
+from analysis.financial_health_alerts import classify_nrr
 from analysis.financial_analyst import FinancialMetrics
 from analysis.reconciliation import ReconciliationReport
 from analysis.risk import RiskReport, Severity
@@ -216,9 +217,16 @@ def _sheet_customers(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
     ca = r.customer_analytics
 
     row = 1
+
+    caveat = aggregator_caveat_text(ca)
+    if caveat:
+        cell = ws.cell(row=row, column=1, value=caveat)
+        cell.font = Font(name="Calibri", bold=True, size=10, color="991B1B")
+        row += 2
+
     ws.cell(row=row, column=1, value="MONTHLY ACTIVE CUSTOMERS + NRR").font = _TITLE_FONT
     row += 1
-    _header_row(ws, ["Month", "Active Customers", "New Acquisitions", "Churn Events", "NRR (annual)"], row=row)
+    _header_row(ws, ["Month", "Active Customers", "New Acquisitions", "Churn Events", "NRR (period-over-period)"], row=row)
     row += 1
     for m in sorted(ca.monthly_active_customers):
         active = ca.monthly_active_customers[m]
@@ -226,7 +234,8 @@ def _sheet_customers(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
         churned = sum(1 for e in ca.churn_events if e.last_payment_date.strftime("%Y-%m") <= m)
         nrr = ca.nrr_per_month.get(m)
         nrr_str = f"{nrr*100:.0f}%" if nrr else "—"
-        nrr_fill = (_GREEN if nrr and nrr >= 1.0 else _RED) if nrr else None
+        nrr_fill = {"healthy": _GREEN, "below_par": _AMBER, "contraction": _AMBER,
+                    "severe": _RED}.get(classify_nrr(nrr)) if nrr is not None else None
         _data_row(ws, [m, active, new, churned, nrr_str], row=row, fills=[None, None, None, None, nrr_fill])
         row += 1
 
@@ -344,14 +353,10 @@ def _sheet_customer_master(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
                      "Total Revenue", "Payment Count", "Status"], row=1)
     churn_ids = {e.customer_id for e in r.customer_analytics.churn_events}
     latest_month = max(r.customer_analytics.monthly_active_customers, default="")
-    active_ids = {
-        cid for cid, months in {} .items()  # filled below
-    }
-    # Get currently active customers from last month
-    active_ids = set()
-    for t in r.doc.transactions:
-        if t.customer_id and t.credit and t.date.strftime("%Y-%m") == latest_month:
-            active_ids.add(t.customer_id)
+    # Sourced from CustomerAnalyticsAnalyst's own computed data rather than
+    # re-scanning raw transactions — keeps this sheet's "Active" status
+    # consistent with what customer_analytics.py actually computed.
+    active_ids = r.customer_analytics.active_customer_ids_by_month.get(latest_month, frozenset())
 
     for i, (cid, data) in enumerate(
         sorted(by_cid.items(), key=lambda x: x[1]["total"], reverse=True), 2
@@ -399,6 +404,8 @@ def _build_pdf(r: WorkbenchAnalysisResult) -> bytes:
         "body": ParagraphStyle("body", fontName="Helvetica", fontSize=8, leading=11, spaceAfter=4),
         "label": ParagraphStyle("label", fontName="Helvetica-Bold", fontSize=8),
         "small": ParagraphStyle("small", fontName="Helvetica", fontSize=7, textColor=rl_colors.grey),
+        "warning": ParagraphStyle("warning", fontName="Helvetica-Bold", fontSize=8.5,
+                                   textColor=rl_colors.HexColor("#991B1B"), spaceAfter=4),
     }
 
     story = []
@@ -520,8 +527,12 @@ def _build_pdf(r: WorkbenchAnalysisResult) -> bytes:
     story.append(Spacer(1, 4*mm))
 
     ca = r.customer_analytics
+    caveat = aggregator_caveat_text(ca)
+    if caveat:
+        story.append(Paragraph(caveat, styles["warning"]))
+        story.append(Spacer(1, 3*mm))
     if ca.nrr_per_month:
-        nrr_data = [["Month", "Annual NRR"]]
+        nrr_data = [["Month", "NRR (period-over-period)"]]
         for mn, nrr in sorted(ca.nrr_per_month.items()):
             nrr_data.append([mn, f"{nrr*100:.0f}%"])
         nt = Table(nrr_data, colWidths=[40*mm, 30*mm])
@@ -533,7 +544,7 @@ def _build_pdf(r: WorkbenchAnalysisResult) -> bytes:
             ("GRID", (0, 0), (-1, -1), 0.3, rl_colors.lightgrey),
             ("PADDING", (0, 0), (-1, -1), 3),
         ]))
-        story.append(Paragraph("Net Revenue Retention (annualised)", styles["h2"]))
+        story.append(Paragraph("Net Revenue Retention (period-over-period)", styles["h2"]))
         story.append(nt)
         story.append(Spacer(1, 4*mm))
 

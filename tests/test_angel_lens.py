@@ -16,7 +16,13 @@ from pathlib import Path
 import pdfplumber
 import pytest
 
+from analysis.customer_analytics import (
+    CustomerAnalyticsAnalyst,
+    CustomerAnalyticsReport,
+    ConcentrationPoint,
+)
 from analysis.financial_analyst import FinancialMetrics, MonthlyStats
+from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
 from reports.angel_lens import (
     AngelLensReport,
     _fmt_amount,
@@ -24,8 +30,15 @@ from reports.angel_lens import (
     _fmt_runway,
     _signals,
     _verdict,
+    _verdict_rationale,
 )
-from schema.canonical import StatementDocument, ValidationStatus
+from schema.canonical import (
+    CanonicalTransaction,
+    SourceReference,
+    StatementDocument,
+    TransactionCategory,
+    ValidationStatus,
+)
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -229,8 +242,17 @@ class TestSignals:
         assert any("runway" in t.lower() for t in texts)
 
     def test_concentration_signal_when_available(self) -> None:
-        m = _metrics(top_customer_revenue_pct="0.70", revenue_hhi="0.50")
-        texts = [text for _, text in _signals(m)]
+        # Wave 3.2: concentration is now measured on top-3 share via
+        # CustomerAnalyticsReport (canonical, shared with financial_health_alerts.py),
+        # not FinancialMetrics.top_customer_revenue_pct (top-1) — see angel_lens._signals.
+        m = _metrics()
+        ca = CustomerAnalyticsReport(
+            monthly_active_customers={}, monthly_active_trend=0.0, churn_events=[],
+            new_acquisitions={}, nrr_per_month={}, cohort_retention={},
+            concentration_trajectory=[ConcentrationPoint(month="2024-06", top3_share=0.70, top10_share=1.0)],
+            payment_regularity_alerts=[],
+        )
+        texts = [text for _, text in _signals(m, ca=ca)]
         assert any("customer" in t.lower() or "concentration" in t.lower() for t in texts)
 
     def test_no_concentration_no_signal(self) -> None:
@@ -269,6 +291,30 @@ class TestGenerate:
         AngelLensReport().generate(_doc(), _metrics(), out)
         with pdfplumber.open(out) as pdf:
             assert len(pdf.pages) == 1
+
+    def test_kpi_row_shows_correct_revenue_burn_and_runway(self, tmp_root: Path) -> None:
+        """Wave 4.1 — verify the actual rendered KPI numbers match the input
+        fixture, not just that the PDF is structurally valid."""
+        m = _metrics(total_revenue="1000000", avg_monthly_burn="200000", runway_months="2.5")
+        out = tmp_root / "kpi_values.pdf"
+        AngelLensReport().generate(_doc(), m, out)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert _fmt_amount(Decimal("1000000")) in text  # "Rs.10.0L"
+        assert _fmt_amount(Decimal("200000")) in text   # "Rs.2.0L"
+        assert _fmt_runway(Decimal("2.5")) in text       # "2.5 mo"
+
+    def test_kpi_row_updates_with_different_fixture(self, tmp_root: Path) -> None:
+        m = _metrics(total_revenue="5000000", avg_monthly_burn="750000", runway_months="9.0")
+        out = tmp_root / "kpi_values2.pdf"
+        AngelLensReport().generate(_doc(), m, out)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert _fmt_amount(Decimal("5000000")) in text  # "Rs.5.0Cr"... actually check threshold
+        assert _fmt_amount(Decimal("750000")) in text
+        assert _fmt_runway(Decimal("9.0")) in text
+        # Must NOT show the previous test's numbers — proves this isn't stale/cached output.
+        assert _fmt_amount(Decimal("1000000")) not in text
 
     def test_returns_output_path(self, tmp_root: Path) -> None:
         out = tmp_root / "retval.pdf"
@@ -311,6 +357,93 @@ class TestGenerate:
         out = tmp_root / "empty_metrics.pdf"
         AngelLensReport().generate(_doc(), m, out)
         assert out.exists()
+
+
+class TestAggregatorCaveatRendering:
+    """Wave 3.1 — aggregator-dominated revenue must surface a prominent
+    caveat in the rendered PDF, and must NOT appear when not dominated."""
+
+    _SRC = SourceReference(file_path="test.pdf", page=0, row=0, raw_text="")
+
+    def _ca_for(self, *, dominated: bool):
+        if dominated:
+            txns = [
+                CanonicalTransaction(
+                    transaction_id="t1", date=date(2024, 4, 15), description="t1",
+                    credit=Decimal("30000"), balance=Decimal("0"), source_reference=self._SRC,
+                    category=TransactionCategory.REVENUE, customer_id="cust_a",
+                ),
+                CanonicalTransaction(
+                    transaction_id="t2", date=date(2024, 4, 15), description="t2",
+                    credit=Decimal("70000"), balance=Decimal("0"), source_reference=self._SRC,
+                    category=TransactionCategory.REVENUE, customer_id=None,
+                    anomaly_flags=[ANOMALY_FLAG_AGGREGATOR_SETTLEMENT],
+                ),
+            ]
+        else:
+            txns = [
+                CanonicalTransaction(
+                    transaction_id="t1", date=date(2024, 4, 15), description="t1",
+                    credit=Decimal("100000"), balance=Decimal("0"), source_reference=self._SRC,
+                    category=TransactionCategory.REVENUE, customer_id="cust_a",
+                ),
+            ]
+        doc = StatementDocument(
+            account_id="AGG001", statement_period_start=date(2024, 4, 1),
+            statement_period_end=date(2024, 4, 30), source_format="test",
+            transactions=txns,
+        )
+        return CustomerAnalyticsAnalyst().analyse(doc)
+
+    def test_caveat_text_appears_when_dominated(self, tmp_root: Path) -> None:
+        ca = self._ca_for(dominated=True)
+        out = tmp_root / "agg_dominated.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out, customer_analytics=ca)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "aggregator-settled" in text
+        assert "70%" in text
+
+    def test_caveat_absent_when_not_dominated(self, tmp_root: Path) -> None:
+        ca = self._ca_for(dominated=False)
+        out = tmp_root / "agg_not_dominated.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out, customer_analytics=ca)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "aggregator-settled" not in text
+
+
+class TestOverclaimingLanguageRemoved:
+    """Wave 3.3 — the product surfaces evidence, it does not render investment
+    verdicts. These specific overclaiming phrases must not appear anywhere in
+    _signals()/_verdict_rationale() output across the scenarios that used to
+    trigger them."""
+
+    def test_growth_signal_does_not_claim_pmf(self) -> None:
+        m = _metrics(avg_mom_growth="0.15")
+        texts = " ".join(text for _, text in _signals(m))
+        assert "product-market fit" not in texts.lower()
+
+    def test_no_runway_signal_does_not_use_rare_and_attractive(self) -> None:
+        m = _metrics(runway_months=None)
+        texts = " ".join(text for _, text in _signals(m))
+        assert "rare and highly attractive" not in texts.lower()
+
+    def test_nrr_signal_does_not_claim_hallmark(self) -> None:
+        ca = CustomerAnalyticsReport(
+            monthly_active_customers={}, monthly_active_trend=0.0, churn_events=[],
+            new_acquisitions={}, nrr_per_month={"2024-02": 1.2}, cohort_retention={},
+            concentration_trajectory=[], payment_regularity_alerts=[],
+        )
+        m = _metrics()
+        texts = " ".join(text for _, text in _signals(m, ca=ca))
+        assert "hallmark" not in texts.lower()
+
+    def test_investable_rationale_does_not_claim_qualifies_for_investment(self) -> None:
+        m = _metrics(avg_monthly_revenue="500000", avg_monthly_burn="200000",
+                     avg_mom_growth="0.15", runway_months=None)
+        rationale = _verdict_rationale(m, None, None)
+        assert "qualifies for investment" not in rationale.lower()
 
 
 # ─── Integration: full pipeline → report ─────────────────────────────────────

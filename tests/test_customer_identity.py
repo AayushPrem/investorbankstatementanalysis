@@ -9,11 +9,13 @@ from unittest.mock import patch
 import pytest
 
 from pipeline.customer_identity import (
+    ANOMALY_FLAG_AGGREGATOR_SETTLEMENT,
     CustomerIdentityResolver,
     _UnionFind,
     _cosine_sim,
     _customer_id,
     clean_counterparty,
+    matched_aggregator,
 )
 from schema.canonical import (
     CanonicalTransaction,
@@ -499,6 +501,65 @@ class TestIntegration:
         doc = _doc(t1, t2)
         result = _resolver().resolve(doc)
         assert result.transactions[0].customer_id == result.transactions[1].customer_id
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Aggregator-settlement exclusion (Wave 3.1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestMatchedAggregator:
+    @pytest.mark.parametrize("desc", [
+        "NEFT CR-RAZORPAY SOFTWARE PVT LTD-SETL000123",
+        "CASHFREE PAYMENTS SETTLEMENT",
+        "PAYU PAYMENTS INDIA SETTLEMENT",
+        "UPI CR-PHONEPE SETTLEMENT-000456",
+        "INSTAMOJO TECHNOLOGIES PAYOUT",
+        "CCAVENUE SETTLEMENT REF9988",
+    ])
+    def test_recognises_known_aggregators(self, desc: str) -> None:
+        assert matched_aggregator(desc) is not None
+
+    def test_ordinary_customer_narration_not_matched(self) -> None:
+        assert matched_aggregator("NEFT CR-ACME PVT LTD-INV00123") is None
+
+
+class TestAggregatorExclusion:
+    def test_aggregator_settlement_gets_no_customer_id(self) -> None:
+        t = _txn("NEFT CR-RAZORPAY SOFTWARE PVT LTD-SETL000123", txn_id="r1")
+        doc = _doc(t)
+        result = _resolver().resolve(doc)
+        assert result.transactions[0].customer_id is None
+
+    def test_aggregator_settlement_tagged_with_anomaly_flag(self) -> None:
+        t = _txn("NEFT CR-RAZORPAY SOFTWARE PVT LTD-SETL000123", txn_id="r1")
+        doc = _doc(t)
+        result = _resolver().resolve(doc)
+        assert ANOMALY_FLAG_AGGREGATOR_SETTLEMENT in result.transactions[0].anomaly_flags
+
+    def test_real_customers_still_cluster_normally_alongside_aggregator_txns(self) -> None:
+        """The presence of aggregator settlements must not disturb clustering
+        of the genuine, identifiable customers in the same statement."""
+        agg1 = _txn("NEFT CR-RAZORPAY SOFTWARE PVT LTD-SETL000123", txn_id="a1")
+        agg2 = _txn("NEFT CR-RAZORPAY SOFTWARE PVT LTD-SETL000124", txn_id="a2")
+        cust1 = _txn("Acme Pvt Ltd", txn_id="c1")
+        cust2 = _txn("Acme Pvt Ltd", txn_id="c2")
+        doc = _doc(agg1, agg2, cust1, cust2)
+        result = _resolver().resolve(doc)
+
+        by_id = {t.transaction_id: t for t in result.transactions}
+        assert by_id["a1"].customer_id is None
+        assert by_id["a2"].customer_id is None
+        assert by_id["c1"].customer_id is not None
+        assert by_id["c1"].customer_id == by_id["c2"].customer_id
+
+    def test_all_aggregator_statement_returns_doc_unchanged_otherwise(self) -> None:
+        """A statement where every REVENUE txn is an aggregator settlement must
+        not error — clusterable_indices is empty, resolver should just tag and return."""
+        agg1 = _txn("RAZORPAY SETTLEMENT", txn_id="a1")
+        doc = _doc(agg1)
+        result = _resolver().resolve(doc)
+        assert result.transactions[0].customer_id is None
+        assert ANOMALY_FLAG_AGGREGATOR_SETTLEMENT in result.transactions[0].anomaly_flags
 
     def test_repeated_monthly_payments_same_customer(self) -> None:
         """Six payments from the same company → one customer_id."""
