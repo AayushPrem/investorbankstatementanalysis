@@ -212,14 +212,33 @@ class TestExecutiveSummary:
         assert "6.20L" in text            # total_revenue = 620000 -> Rs.6.20L
         assert "1.23L" in text            # avg_monthly_burn = 122500 -> Rs.1.23L
         assert "16.3 mo" in text          # runway
-        assert "42/100" in text           # risk score
         assert "1 HIGH" in text           # compliance high_count and recon high_count both 1
+        assert "42/100" not in text       # composite score no longer rendered (Wave 4.5)
 
     def test_key_findings_lists_risk_flag(self) -> None:
         buf, _ = _generate(_result())
         wb = load_workbook(buf)
         text = _sheet_text(wb["Executive Summary"])
         assert "founder_over_extraction" in text
+
+    def test_flag_summary_table_shows_severity_breakdown(self) -> None:
+        """Wave 4.5 — replaces the removed composite risk score."""
+        buf, _ = _generate(_result())
+        wb = load_workbook(buf)
+        text = _sheet_text(wb["Executive Summary"])
+        assert "FLAG SUMMARY" in text
+        assert "Risk flags" in text
+        assert "Compliance exceptions" in text
+        assert "Reconciliation findings" in text
+
+    def test_summary_narrative_shown(self) -> None:
+        result = _result()
+        result.narrative = "A distinctive workbench summary narrative."
+        buf, _ = _generate(result)
+        wb = load_workbook(buf)
+        text = _sheet_text(wb["Executive Summary"])
+        assert "SUMMARY" in text
+        assert "distinctive workbench summary narrative" in text
 
     def test_company_name_in_title(self) -> None:
         buf, _ = _generate(_result())
@@ -264,11 +283,14 @@ class TestRiskFlagsSheet:
         assert "HIGH" in text
         assert "t4" in text  # triggering transaction id
 
-    def test_composite_score_row(self) -> None:
+    def test_total_flags_row_shows_severity_breakdown(self) -> None:
+        """Wave 4.5 — replaces the removed composite risk score row."""
         buf, _ = _generate(_result())
         wb = load_workbook(buf)
         text = _sheet_text(wb["Risk Flags"])
-        assert "42" in text
+        assert "Total Flags" in text
+        assert "1 High / 0 Medium / 0 Low" in text
+        assert "42" not in text  # old composite score value must not appear
 
     def test_no_flags_case(self) -> None:
         result = _result(risk_report=RiskReport(flags=[], composite_score=0.0, narrative="No flags."))

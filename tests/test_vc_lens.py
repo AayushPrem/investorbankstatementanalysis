@@ -259,7 +259,9 @@ class TestSummarySheetContent:
         assert found is not None
         assert abs(found - float(result.metrics.total_burn)) < 0.01
 
-    def test_risk_score_matches_report(self) -> None:
+    def test_composite_risk_score_not_shown(self) -> None:
+        """Wave 4.5 — the composite score is no longer rendered anywhere in
+        the Summary sheet; only flag counts by severity are."""
         flags = [Flag(
             detector_name="structuring",
             severity=Severity.HIGH,
@@ -271,13 +273,29 @@ class TestSummarySheetContent:
         xlsx, _ = VCLensReport().generate(result)
         wb = _load_wb(xlsx)
         ws = wb["Summary"]
-        found = None
+        labels = [row[0].value for row in ws.iter_rows() if row[0].value]
+        assert not any("Composite Risk Score" in str(v) for v in labels)
+
+    def test_total_red_flags_and_severity_breakdown_shown(self) -> None:
+        flags = [
+            Flag(detector_name="structuring", severity=Severity.HIGH,
+                 triggering_transaction_ids=["t1"], description="d"),
+            Flag(detector_name="round_tripping", severity=Severity.MEDIUM,
+                 triggering_transaction_ids=["t2"], description="d"),
+        ]
+        result = _sample_result(flags=flags)
+        xlsx, _ = VCLensReport().generate(result)
+        wb = _load_wb(xlsx)
+        ws = wb["Summary"]
+        found_total = None
+        found_breakdown = None
         for row in ws.iter_rows():
-            if row[0].value == "Composite Risk Score (/100)":
-                found = row[1].value
-                break
-        assert found is not None
-        assert abs(found - 42.0) < 0.01
+            if row[0].value == "Total Red Flags":
+                found_total = row[1].value
+            if row[0].value == "Flags by Severity (H / M / L)":
+                found_breakdown = row[1].value
+        assert found_total == 2
+        assert found_breakdown == "1 / 1 / 0"
 
     def test_runway_matches_metrics(self) -> None:
         result = _sample_result()
@@ -710,3 +728,46 @@ class TestNoFlagsWordingIsQualified:
             text = "\n".join(p.extract_text() or "" for p in pdf.pages)
         assert "appears clean" not in text
         assert "no flags detected" in text.lower()
+
+
+class TestNoVerdictOrScore:
+    """Wave 4.5 — no INVESTABLE/MONITOR/CAUTION label and no composite score
+    anywhere in the VC Lens PDF or XLSX."""
+
+    def test_pdf_never_shows_verdict_label(self) -> None:
+        _, pdf_bytes = VCLensReport().generate(_sample_result())
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        for label in ("INVESTABLE", "MONITOR", "CAUTION"):
+            assert label not in text
+
+    def test_xlsx_never_shows_verdict_label(self) -> None:
+        xlsx, _ = VCLensReport().generate(_sample_result())
+        wb = _load_wb(xlsx)
+        all_text = " ".join(
+            str(cell.value) for ws in wb.worksheets for row in ws.iter_rows() for cell in row
+            if cell.value
+        )
+        for label in ("INVESTABLE", "MONITOR", "CAUTION"):
+            assert label not in all_text
+
+
+class TestSummarySheet:
+    def test_narrative_rendered_in_summary_sheet(self) -> None:
+        result = _sample_result()
+        result.narrative = "A distinctive VC summary narrative sentence."
+        xlsx, _ = VCLensReport().generate(result)
+        wb = _load_wb(xlsx)
+        ws = wb["Summary"]
+        all_text = " ".join(
+            str(cell.value) for row in ws.iter_rows() for cell in row if cell.value
+        )
+        assert "distinctive VC summary narrative sentence" in all_text
+
+    def test_narrative_rendered_in_pdf(self) -> None:
+        result = _sample_result()
+        result.narrative = "A distinctive VC PDF narrative sentence."
+        _, pdf_bytes = VCLensReport().generate(result)
+        with pdfplumber.open(BytesIO(pdf_bytes)) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "distinctive VC PDF narrative sentence" in text

@@ -1,11 +1,15 @@
 """Tests for the Angel Lens report generator (Step 1.11).
 
 Coverage:
-  - Verdict logic (_verdict) for all three outcomes
   - Formatting helpers (_fmt_amount, _fmt_growth, _fmt_runway)
   - Health signals (_signals) content and length
+  - Flag summary (counts by severity — replaces the removed verdict banner
+    and composite risk score) and the Summary narrative paragraph
   - generate() produces a valid 1-page PDF
   - Integration: full pipeline → report for HDFC and ICICI statements
+
+No verdict (INVESTABLE/MONITOR/CAUTION) or composite risk score is rendered
+anywhere in this report — see reports/angel_lens.py's module docstring.
 """
 from __future__ import annotations
 
@@ -23,14 +27,14 @@ from analysis.customer_analytics import (
 )
 from analysis.financial_analyst import FinancialMetrics, MonthlyStats
 from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
+from analysis.financial_health_alerts import FinancialHealthAnalyst
+from analysis.risk import Flag, RiskReport, Severity
 from reports.angel_lens import (
     AngelLensReport,
     _fmt_amount,
     _fmt_growth,
     _fmt_runway,
     _signals,
-    _verdict,
-    _verdict_rationale,
 )
 from schema.canonical import (
     CanonicalTransaction,
@@ -89,60 +93,6 @@ def _doc(account_id: str = "TEST001") -> StatementDocument:
 @pytest.fixture(scope="module")
 def tmp_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return tmp_path_factory.mktemp("angel_lens")
-
-
-# ─── _verdict ─────────────────────────────────────────────────────────────────
-
-class TestVerdict:
-    def test_investable_when_profitable_and_growing(self) -> None:
-        m = _metrics(avg_monthly_revenue="400000", avg_monthly_burn="300000",
-                     avg_mom_growth="0.10", runway_months="2.0")
-        label, *_ = _verdict(m)
-        assert label == "INVESTABLE"
-
-    def test_investable_when_6_plus_months_runway_and_growing(self) -> None:
-        m = _metrics(avg_monthly_revenue="100000", avg_monthly_burn="500000",
-                     avg_mom_growth="0.05", runway_months="8.0")
-        label, *_ = _verdict(m)
-        assert label == "INVESTABLE"
-
-    def test_monitor_when_profitable_but_declining(self) -> None:
-        m = _metrics(avg_monthly_revenue="400000", avg_monthly_burn="300000",
-                     avg_mom_growth="-0.05", runway_months="4.0")
-        label, *_ = _verdict(m)
-        assert label == "MONITOR"
-
-    def test_monitor_when_3_to_6_months_runway(self) -> None:
-        m = _metrics(avg_monthly_revenue="100000", avg_monthly_burn="500000",
-                     avg_mom_growth="-0.02", runway_months="4.0")
-        label, *_ = _verdict(m)
-        assert label == "MONITOR"
-
-    def test_caution_when_very_short_runway(self) -> None:
-        m = _metrics(avg_monthly_revenue="50000", avg_monthly_burn="500000",
-                     avg_mom_growth="-0.10", runway_months="1.5")
-        label, *_ = _verdict(m)
-        assert label == "CAUTION"
-
-    def test_verdict_returns_three_values(self) -> None:
-        m = _metrics()
-        result = _verdict(m)
-        assert len(result) == 3
-
-    def test_verdict_label_is_string(self) -> None:
-        m = _metrics()
-        label, fg, bg = _verdict(m)
-        assert isinstance(label, str)
-        assert label in {"INVESTABLE", "MONITOR", "CAUTION"}
-
-    def test_no_runway_and_profitable(self) -> None:
-        """Profitable business with no burn has no runway risk — INVESTABLE."""
-        m = _metrics(
-            avg_monthly_revenue="500000", avg_monthly_burn="300000",
-            runway_months=None, avg_mom_growth="0.05",
-        )
-        label, *_ = _verdict(m)
-        assert label == "INVESTABLE"
 
 
 # ─── formatting helpers ───────────────────────────────────────────────────────
@@ -332,17 +282,17 @@ class TestGenerate:
         AngelLensReport().generate(_doc(), _metrics(), out, company_name="Acme Pvt Ltd")
         assert out.exists()
 
-    def test_investable_verdict_generates(self, tmp_root: Path) -> None:
+    def test_strong_growth_scenario_generates(self, tmp_root: Path) -> None:
         m = _metrics(avg_monthly_revenue="500000", avg_monthly_burn="200000",
                      avg_mom_growth="0.15", runway_months=None)
-        out = tmp_root / "investable.pdf"
+        out = tmp_root / "strong_growth.pdf"
         AngelLensReport().generate(_doc(), m, out)
         assert out.read_bytes()[:5] == b"%PDF-"
 
-    def test_caution_verdict_generates(self, tmp_root: Path) -> None:
+    def test_high_risk_scenario_generates(self, tmp_root: Path) -> None:
         m = _metrics(avg_monthly_revenue="50000", avg_monthly_burn="800000",
                      avg_mom_growth="-0.20", runway_months="1.0")
-        out = tmp_root / "caution.pdf"
+        out = tmp_root / "high_risk.pdf"
         AngelLensReport().generate(_doc(), m, out)
         assert out.read_bytes()[:5] == b"%PDF-"
 
@@ -414,10 +364,10 @@ class TestAggregatorCaveatRendering:
 
 
 class TestOverclaimingLanguageRemoved:
-    """Wave 3.3 — the product surfaces evidence, it does not render investment
-    verdicts. These specific overclaiming phrases must not appear anywhere in
-    _signals()/_verdict_rationale() output across the scenarios that used to
-    trigger them."""
+    """Wave 3.3/4.5 — the product surfaces evidence, it does not render
+    investment verdicts. These specific overclaiming phrases must not appear
+    anywhere in _signals() output across the scenarios that used to trigger
+    them, and no report anywhere renders INVESTABLE/MONITOR/CAUTION."""
 
     def test_growth_signal_does_not_claim_pmf(self) -> None:
         m = _metrics(avg_mom_growth="0.15")
@@ -439,11 +389,75 @@ class TestOverclaimingLanguageRemoved:
         texts = " ".join(text for _, text in _signals(m, ca=ca))
         assert "hallmark" not in texts.lower()
 
-    def test_investable_rationale_does_not_claim_qualifies_for_investment(self) -> None:
-        m = _metrics(avg_monthly_revenue="500000", avg_monthly_burn="200000",
-                     avg_mom_growth="0.15", runway_months=None)
-        rationale = _verdict_rationale(m, None, None)
-        assert "qualifies for investment" not in rationale.lower()
+    def test_pdf_never_renders_a_verdict_label(self, tmp_root: Path) -> None:
+        out = tmp_root / "no_verdict.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out, narrative="Test narrative.")
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        for label in ("INVESTABLE", "MONITOR", "CAUTION"):
+            assert label not in text
+        assert "/ 100" not in text  # no composite score badge
+
+
+# ─── Flag summary (replaces verdict banner + composite score) ────────────────
+
+class TestFlagSummary:
+    def test_shows_risk_flag_counts_by_severity(self, tmp_root: Path) -> None:
+        rr = RiskReport(
+            flags=[
+                Flag(detector_name="structuring", severity=Severity.HIGH,
+                     triggering_transaction_ids=["t1"], description="d"),
+                Flag(detector_name="round_tripping", severity=Severity.MEDIUM,
+                     triggering_transaction_ids=["t2"], description="d"),
+            ],
+            composite_score=15.0, narrative="",
+        )
+        out = tmp_root / "flag_summary.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out, risk_report=rr)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "Risk flags" in text
+        assert "15.0" not in text  # composite score value must not appear
+
+    def test_shows_health_alert_counts_when_provided(self, tmp_root: Path) -> None:
+        m = _metrics(runway_months="1.0", avg_mom_growth="-0.3")
+        health_report = FinancialHealthAnalyst(llm_enabled=False).analyse(
+            m, CustomerAnalyticsReport(
+                monthly_active_customers={}, monthly_active_trend=0.0, churn_events=[],
+                new_acquisitions={}, nrr_per_month={}, cohort_retention={},
+                concentration_trajectory=[], payment_regularity_alerts=[],
+            ),
+        )
+        out = tmp_root / "health_flag_summary.pdf"
+        AngelLensReport().generate(_doc(), m, out, health_report=health_report)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "Financial health alerts" in text
+
+    def test_no_section_when_neither_report_provided(self, tmp_root: Path) -> None:
+        out = tmp_root / "no_flag_summary.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "Risk flags" not in text
+        assert "Financial health alerts" not in text
+
+
+class TestSummaryParagraph:
+    def test_narrative_rendered_when_provided(self, tmp_root: Path) -> None:
+        out = tmp_root / "with_summary.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out, narrative="A distinctive test narrative sentence.")
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "Summary" in text
+        assert "distinctive test narrative sentence" in text
+
+    def test_no_summary_section_when_narrative_absent(self, tmp_root: Path) -> None:
+        out = tmp_root / "no_summary.pdf"
+        AngelLensReport().generate(_doc(), _metrics(), out)
+        with pdfplumber.open(out) as pdf:
+            text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        assert "Summary" not in text
 
 
 # ─── Integration: full pipeline → report ─────────────────────────────────────

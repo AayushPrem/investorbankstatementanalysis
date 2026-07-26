@@ -54,6 +54,7 @@ class WorkbenchAnalysisResult:
     compliance_report: ComplianceReport
     reconciliation_report: ReconciliationReport
     company_name: str | None = None
+    narrative: str | None = None  # one-paragraph summary — see analysis/report_narrative.py
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -141,7 +142,7 @@ def _sheet_summary(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
         ("Total Revenue", _inr(m.total_revenue)),
         ("Avg Monthly Burn", _inr(m.avg_monthly_burn)),
         ("Runway", f"{float(m.runway_months):.1f} mo" if m.runway_months else "—"),
-        ("Risk Score", f"{rr.composite_score:.0f}/100"),
+        ("Risk Flags", str(len(rr.flags))),
         ("Compliance Issues", str(r.compliance_report.high_count) + " HIGH"),
         ("Recon Findings", str(r.reconciliation_report.high_count) + " HIGH"),
     ]
@@ -159,8 +160,39 @@ def _sheet_summary(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
     ws.cell(row=5, column=5, value=kpis[5][0]).font = _BODY_FONT
     ws.cell(row=5, column=6, value=kpis[5][1]).font = Font(name="Calibri", bold=True, size=9)
 
-    # Top findings (risk + compliance + reconciliation combined)
     row = 7
+    if r.narrative:
+        ws.merge_cells(f"A{row}:F{row}")
+        ws.cell(row=row, column=1, value="SUMMARY").font = Font(name="Calibri", bold=True, color="FFFFFF")
+        ws.cell(row=row, column=1).fill = _SLATE
+        row += 1
+        ws.merge_cells(f"A{row}:F{row}")
+        nc = ws.cell(row=row, column=1, value=r.narrative)
+        nc.font = _BODY_FONT
+        nc.alignment = _LEFT
+        ws.row_dimensions[row].height = 45
+        row += 2
+
+    # Flag counts by severity — replaces the removed composite risk score
+    ws.merge_cells(f"A{row}:F{row}")
+    ws.cell(row=row, column=1, value="FLAG SUMMARY").font = Font(name="Calibri", bold=True, color="FFFFFF")
+    ws.cell(row=row, column=1).fill = _SLATE
+    row += 1
+    _header_row(ws, ["Category", "Total", "High", "Medium", "Low"], row=row, fill=_SLATE)
+    row += 1
+    for label, items in [
+        ("Risk flags", rr.flags),
+        ("Compliance exceptions", r.compliance_report.exceptions),
+        ("Reconciliation findings", r.reconciliation_report.findings),
+    ]:
+        high = sum(1 for x in items if str(x.severity) == "HIGH")
+        med  = sum(1 for x in items if str(x.severity) == "MEDIUM")
+        low  = sum(1 for x in items if str(x.severity) == "LOW")
+        _data_row(ws, [label, len(items), high, med, low], row=row)
+        row += 1
+    row += 1
+
+    # Top findings (risk + compliance + reconciliation combined)
     ws.merge_cells(f"A{row}:F{row}")
     ws.cell(row=row, column=1, value="KEY FINDINGS").font = _TITLE_FONT
     ws.cell(row=row, column=1).fill = _SLATE
@@ -207,8 +239,12 @@ def _sheet_risk(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
                   row=i, fills=[_sev_fill(flag.severity), _sev_fill(flag.severity)])
 
     row = len(r.risk_report.flags) + 3
-    ws.cell(row=row, column=1, value="Composite Risk Score").font = Font(bold=True)
-    ws.cell(row=row, column=2, value=f"{r.risk_report.composite_score:.0f} / 100").font = Font(bold=True)
+    high = sum(1 for f in r.risk_report.flags if str(f.severity) == "HIGH")
+    med  = sum(1 for f in r.risk_report.flags if str(f.severity) == "MEDIUM")
+    low  = sum(1 for f in r.risk_report.flags if str(f.severity) == "LOW")
+    ws.cell(row=row, column=1, value="Total Flags").font = Font(bold=True)
+    ws.cell(row=row, column=2, value=str(len(r.risk_report.flags))).font = Font(bold=True)
+    ws.cell(row=row, column=3, value=f"{high} High / {med} Medium / {low} Low").font = Font(bold=True)
     _autowidth(ws)
 
 
@@ -435,7 +471,7 @@ def _build_pdf(r: WorkbenchAnalysisResult) -> bytes:
     kpi_data = [
         ["Total Revenue", _inr(m.total_revenue), "Avg Monthly Burn", _inr(m.avg_monthly_burn)],
         ["Avg Monthly Revenue", _inr(m.avg_monthly_revenue), "Runway", f"{float(m.runway_months):.1f} mo" if m.runway_months else "—"],
-        ["Risk Score", f"{r.risk_report.composite_score:.0f}/100",
+        ["Risk Flags", str(len(r.risk_report.flags)),
          "Compliance HIGH", str(r.compliance_report.high_count)],
     ]
     kpi_tbl = Table(kpi_data, colWidths=[40*mm, 40*mm, 40*mm, 40*mm])
@@ -451,6 +487,11 @@ def _build_pdf(r: WorkbenchAnalysisResult) -> bytes:
     ]))
     story.append(kpi_tbl)
     story.append(Spacer(1, 5*mm))
+
+    if r.narrative:
+        story.append(Paragraph("Summary", styles["h2"]))
+        story.append(Paragraph(r.narrative, styles["body"]))
+        story.append(Spacer(1, 4*mm))
 
     # Risk flags
     story.append(Paragraph("Risk Flags", styles["h2"]))

@@ -54,6 +54,8 @@ class AnalysisResult:
     risk_report: RiskReport
     customer_analytics: CustomerAnalyticsReport
     company_name: str | None = None
+    health_report: object | None = None  # FinancialHealthReport, if available
+    narrative: str | None = None  # one-paragraph summary — see analysis/report_narrative.py
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,18 @@ def _sheet1_summary(wb: Workbook, result: AnalysisResult) -> None:
     ws.cell(row=row, column=1, value=_period_str(doc)).font = _hfont(color="6B7280")
     row += 1
 
+    # SUMMARY (replaces the removed verdict banner — no INVESTABLE/MONITOR/
+    # CAUTION label, no composite score; see analysis/report_narrative.py)
+    if result.narrative:
+        _write_section_row(ws, row, "SUMMARY")
+        row += 1
+        nc = ws.cell(row=row, column=1, value=result.narrative)
+        nc.font = _hfont(color="374151", size=9)
+        nc.alignment = _left()
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+        ws.row_dimensions[row].height = 60
+        row += 2
+
     # Explanation column header
     ws.cell(row=row, column=3, value="What this means").font = _hfont(bold=True, color="6B7280", size=9)
     row += 1
@@ -245,9 +259,6 @@ def _sheet1_summary(wb: Workbook, result: AnalysisResult) -> None:
     high = sum(1 for f in r.flags if f.severity == Severity.HIGH)
     med  = sum(1 for f in r.flags if f.severity == Severity.MEDIUM)
     low  = sum(1 for f in r.flags if f.severity == Severity.LOW)
-    _write_kv_row(ws, row, "Composite Risk Score (/100)", float(r.composite_score), "0.0",
-                  "0 = no issues detected. 20–49 = caution warranted. ≥50 = significant red flags.")
-    row += 1
     _write_kv_row(ws, row, "Total Red Flags", len(r.flags), None,
                   "Count of automated risk patterns. Each flag has an explanation in the Red Flags sheet.")
     row += 1
@@ -847,8 +858,6 @@ _PS_CAVEAT   = _ps("VCCaveat", "Helvetica-Bold",   8.5, 11, _RL_RED, TA_LEFT)
 _PS_FOOTER   = _ps("VCFoot",   "Helvetica",        7,  9, _RL_MID,  TA_CENTER)
 _PS_FLAG_HDR = _ps("VCFlagH",  "Helvetica-Bold",   8, 11, rl_colors.black, TA_LEFT)
 _PS_FLAG     = _ps("VCFlag",   "Helvetica",        8, 11, rl_colors.black, TA_LEFT)
-_PS_VERDICT  = _ps("VCVerdict","Helvetica-Bold",  12, 16, rl_colors.black, TA_CENTER)
-_PS_RAT      = _ps("VCRat",    "Helvetica",        8, 11, _RL_MID,  TA_CENTER)
 
 
 def _pdf_footer(story: list, cw: float) -> None:
@@ -861,18 +870,6 @@ def _pdf_footer(story: list, cw: float) -> None:
         "Verify all figures against source bank statements.",
         _PS_FOOTER,
     ))
-
-
-def _verdict_label_and_colours(m: FinancialMetrics) -> tuple[str, object, object]:
-    runway = m.runway_months or _ZERO
-    growth = m.avg_mom_growth or _ZERO
-    if m.is_profitable and growth >= _ZERO:
-        return "INVESTABLE", _RL_GREEN, _RL_GREEN_B
-    if runway >= Decimal("6") and growth >= _ZERO:
-        return "INVESTABLE", _RL_GREEN, _RL_GREEN_B
-    if m.is_profitable or runway >= Decimal("3"):
-        return "MONITOR", _RL_AMBER, _RL_AMBER_B
-    return "CAUTION", _RL_RED, _RL_RED_B
 
 
 def _build_pdf(result: AnalysisResult) -> bytes:
@@ -926,45 +923,48 @@ def _build_pdf(result: AnalysisResult) -> bytes:
     story.append(HRFlowable(width=cw, thickness=0.5, color=_RL_HGREY))
     story.append(Spacer(1, 5))
 
-    # Verdict banner
-    v_label, v_fg, v_bg = _verdict_label_and_colours(m)
+    # Summary paragraph (replaces the removed verdict banner — no
+    # INVESTABLE/MONITOR/CAUTION label, no composite score; see
+    # analysis/report_narrative.py)
     runway = m.runway_months
     growth = m.avg_mom_growth
-    rationale_parts = []
-    if m.is_profitable:
-        rationale_parts.append("cash-flow positive")
-    if runway is not None:
-        rationale_parts.append(f"{float(runway):.1f}mo runway")
-    if growth is not None:
-        rationale_parts.append(f"revenue growth {float(growth)*100:+.1f}%/mo")
     nrr_vals = list(ca.nrr_per_month.values())
-    if nrr_vals:
-        rationale_parts.append(f"NRR {nrr_vals[-1]*100:.0f}%")
-    rationale_str = " · ".join(rationale_parts) if rationale_parts else "based on financial data"
+    if result.narrative:
+        story.append(Paragraph("Summary", _PS_SECTION))
+        story.append(Paragraph(result.narrative, _PS_BODY))
+        story.append(Spacer(1, 5))
 
-    vd = [[
-        Paragraph(f"&bull; {v_label} &bull;", _PS_VERDICT),
-        Paragraph(rationale_str, _PS_RAT),
+    high = sum(1 for f in r.flags if f.severity == Severity.HIGH)
+    med  = sum(1 for f in r.flags if f.severity == Severity.MEDIUM)
+    low  = sum(1 for f in r.flags if f.severity == Severity.LOW)
+    flag_data = [[
+        Paragraph("Risk Flags", _ps("FSH", "Helvetica-Bold", 7.5, 10, _RL_MID, TA_CENTER)),
+        Paragraph("Total", _ps("FSH2", "Helvetica-Bold", 7.5, 10, _RL_MID, TA_CENTER)),
+        Paragraph("High", _ps("FSH3", "Helvetica-Bold", 7.5, 10, _RL_MID, TA_CENTER)),
+        Paragraph("Medium", _ps("FSH4", "Helvetica-Bold", 7.5, 10, _RL_MID, TA_CENTER)),
+        Paragraph("Low", _ps("FSH5", "Helvetica-Bold", 7.5, 10, _RL_MID, TA_CENTER)),
+    ], [
+        Paragraph("Detected", _ps("FSV0", "Helvetica", 8, 11, rl_colors.black, TA_LEFT)),
+        Paragraph(str(len(r.flags)), _ps("FSV1", "Helvetica-Bold", 8, 11, _RL_BLUE, TA_CENTER)),
+        Paragraph(str(high), _ps("FSV2", "Helvetica-Bold", 8, 11, _RL_BLUE, TA_CENTER)),
+        Paragraph(str(med), _ps("FSV3", "Helvetica-Bold", 8, 11, _RL_BLUE, TA_CENTER)),
+        Paragraph(str(low), _ps("FSV4", "Helvetica-Bold", 8, 11, _RL_BLUE, TA_CENTER)),
     ]]
-    vt = Table(vd, colWidths=[cw * 0.3, cw * 0.7])
-    vt.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), v_bg),
-        ("TEXTCOLOR",     (0, 0), (0, 0),   v_fg),
-        ("TOPPADDING",    (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 8),
-        ("BOX",           (0, 0), (-1, -1), 0.5, v_fg),
+    flag_tbl = Table(flag_data, colWidths=[cw * 0.30, cw * 0.175, cw * 0.175, cw * 0.175, cw * 0.175])
+    flag_tbl.setStyle(TableStyle([
+        ("BACKGROUND",    (0, 0), (-1, 0), _RL_LGREY),
+        ("GRID",          (0, 0), (-1, -1), 0.3, _RL_HGREY),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
     ]))
-    story.append(vt)
+    story.append(flag_tbl)
     story.append(Spacer(1, 6))
 
-    # 6-KPI grid
+    # 5-KPI grid
     active_counts = list(ca.monthly_active_customers.values())
     latest_active = active_counts[-1] if active_counts else "—"
     latest_nrr = nrr_vals[-1] if nrr_vals else None
-    score = r.composite_score
-    score_str = f"{score:.0f}/100"
 
     kpi_labels = [
         ("Revenue", _fmt_amount(m.total_revenue), "Total customer inflows"),
@@ -972,7 +972,6 @@ def _build_pdf(result: AnalysisResult) -> bytes:
         ("Runway", (f"{float(runway):.1f}mo" if runway else "Profitable"), "Cash at current burn"),
         ("MoM Growth", (_fmt_pct(growth) if growth else "N/A"), ">5% = strong"),
         ("NRR", (f"{latest_nrr*100:.0f}%" if latest_nrr else "N/A"), "≥100% = stable base"),
-        ("Risk Score", score_str, ("Low" if score < 20 else "Medium" if score < 50 else "High")),
     ]
 
     kpi_rows = [
@@ -982,12 +981,12 @@ def _build_pdf(result: AnalysisResult) -> bytes:
                    _ps(f"KL{i}", "Helvetica", 7, 10, _RL_MID, TA_CENTER))
          for i, (k, _, note) in enumerate(kpi_labels)],
     ]
-    kpi_tbl = Table(kpi_rows, colWidths=[cw / 6] * 6)
+    kpi_tbl = Table(kpi_rows, colWidths=[cw / 5] * 5)
     kpi_tbl.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, -1), _RL_LGREY),
         ("TOPPADDING",    (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LINEAFTER",     (0, 0), (4, -1),  0.5, _RL_HGREY),
+        ("LINEAFTER",     (0, 0), (3, -1),  0.5, _RL_HGREY),
         ("ALIGN",         (0, 0), (-1, -1), "CENTER"),
     ]))
     story.append(kpi_tbl)
@@ -1036,43 +1035,14 @@ def _build_pdf(result: AnalysisResult) -> bytes:
 
     story.append(Spacer(1, 8))
 
-    # Risk summary (compact)
-    story.append(Paragraph("Risk Overview", _PS_SECTION))
-    story.append(Spacer(1, 3))
-    high = sum(1 for f in r.flags if f.severity == Severity.HIGH)
-    med  = sum(1 for f in r.flags if f.severity == Severity.MEDIUM)
-    low  = sum(1 for f in r.flags if f.severity == Severity.LOW)
-    score_color = _RL_RED if score >= 50 else (_RL_AMBER if score >= 20 else _RL_GREEN)
-
-    risk_row = [[
-        Paragraph(
-            f"<font color='#{_RED_F if score>=50 else _AMBER_F if score>=20 else _GREEN_F}'>"
-            f"<b>{score:.0f}/100</b></font><br/>"
-            f"<font size='7'>Composite score</font>",
-            _ps("RS", "Helvetica-Bold", 10, 13, rl_colors.black, TA_CENTER)
-        ),
-        Paragraph(
-            f"<b>{len(r.flags)}</b> flag(s)<br/>"
-            f"<font size='7'>{high} HIGH · {med} MED · {low} LOW</font>",
-            _ps("RF", "Helvetica", 8, 11, rl_colors.black, TA_CENTER)
-        ),
-        Paragraph(
-            r.narrative[:250] + ("…" if len(r.narrative) > 250 else "") if r.narrative else
-            "No significant risk patterns detected.",
-            _ps("RN", "Helvetica", 7.5, 10.5, _RL_MID, TA_LEFT)
-        ),
-    ]]
-    risk_tbl = Table(risk_row, colWidths=[cw*0.14, cw*0.18, cw*0.68])
-    risk_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (1, 0), _RL_LGREY),
-        ("TOPPADDING",    (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 6),
-        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-        ("LINEAFTER",     (1, 0), (1, 0),   0.5, _RL_HGREY),
-        ("BOX",           (0, 0), (1, 0),   0.5, score_color),
-    ]))
-    story.append(risk_tbl)
+    # Risk narrative (flag counts already shown at the top of this page)
+    if r.narrative:
+        story.append(Paragraph("Risk Narrative", _PS_SECTION))
+        story.append(Spacer(1, 3))
+        story.append(Paragraph(
+            r.narrative[:400] + ("…" if len(r.narrative) > 400 else ""),
+            _ps("RN", "Helvetica", 8, 11, _RL_MID, TA_LEFT)
+        ))
 
     _pdf_footer(story, cw)
 

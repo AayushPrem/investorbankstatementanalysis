@@ -5,7 +5,7 @@ Run:
 
 Four analysis modes — one per report lens, same underlying pipeline:
 
-Angel mode: the quick read — verdict, KPIs, top health signals, 1-page PDF.
+Angel mode: the quick read — summary, KPIs, top health signals, 1-page PDF.
 VC mode: financial health, risk flags, customer analytics, transaction
     ledger, related parties — matches the VC Lens XLSX/PDF exactly.
 Workbench mode: everything above plus Indian compliance and pitch-deck
@@ -129,12 +129,6 @@ _inject_theme_css()
 # ─────────────────────────────────────────────────────────────────────────────
 # Colour palette
 # ─────────────────────────────────────────────────────────────────────────────
-
-_VERDICT_COLOURS = {
-    "INVESTABLE": ("#166534", "#DCFCE7"),
-    "MONITOR":    ("#92400E", "#FEF3C7"),
-    "CAUTION":    ("#991B1B", "#FEE2E2"),
-}
 
 _SEV_COLOURS = {
     "HIGH":   ("#991B1B", "#FEE2E2"),
@@ -470,37 +464,50 @@ def _affiliate_selector(initial_result: DemoResult) -> list[Affiliate]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Section: Verdict banner
+# Section: Flag summary banner
 # ─────────────────────────────────────────────────────────────────────────────
+# Deliberately no verdict (INVESTABLE/MONITOR/CAUTION) and no composite risk
+# score — just counts by severity for each finding category. The reader
+# forms their own judgment; the tool reports what it found.
 
-def _render_verdict_banner(result: DemoResult) -> None:
-    label = result.verdict_label
-    fg, bg = _VERDICT_COLOURS.get(label, ("#1A2B4A", "#F3F4F6"))
-    doc    = result.doc
+def _flag_count_badge(label: str, items: list, severity_attr: str = "severity") -> str:
+    from analysis.report_narrative import severity_counts
+
+    counts = severity_counts(items, severity_attr)
+    total = sum(counts.values())
+    if total == 0:
+        return _badge(f"{label}: 0", "#166534", "#DCFCE7")
+    if counts["HIGH"]:
+        fg, bg = _SEV_COLOURS["HIGH"]
+    elif counts["MEDIUM"]:
+        fg, bg = _SEV_COLOURS["MEDIUM"]
+    else:
+        fg, bg = _SEV_COLOURS["LOW"]
+    parts = [f"{counts[s]}{s[0]}" for s in ("HIGH", "MEDIUM", "LOW") if counts[s]]
+    return _badge(f"{label}: {total} ({', '.join(parts)})", fg, bg)
+
+
+def _render_flag_summary_banner(result: DemoResult) -> None:
+    doc = result.doc
     n_txns = len(doc.transactions)
-    n_flags = len(result.risk_report.flags)
-    risk_score = result.risk_report.composite_score
 
-    risk_badge = ""
-    if n_flags:
-        rf, rb = _SEV_COLOURS.get(
-            "HIGH" if risk_score >= 50 else "MEDIUM" if risk_score >= 20 else "LOW",
-            ("#374151", "#F3F4F6"),
-        )
-        risk_badge = f'&nbsp;&nbsp;{_badge(f"Risk: {risk_score:.0f}/100 · {n_flags} flag(s)", rf, rb)}'
+    badges = [
+        _flag_count_badge("Risk flags", result.risk_report.flags),
+        _flag_count_badge("Financial health alerts", result.health_report.alerts),
+        _flag_count_badge("Compliance", result.compliance_report.exceptions),
+    ]
+    if result.reconciliation_report.claims_provided:
+        badges.append(_flag_count_badge("Reconciliation", result.reconciliation_report.findings))
 
     st.markdown(
         f"""
-        <div style="background:{bg};border:1.5px solid {fg};border-radius:8px;
+        <div style="background:#F3F4F6;border:1.5px solid #1A2B4A;border-radius:8px;
                     padding:14px 20px;margin-bottom:12px;">
-          <span style="font-size:1.3rem;font-weight:700;color:{fg};">
-            &#9679; {label}
-          </span>
-          <span style="color:#6B7280;margin-left:18px;font-size:0.9rem;">
+          <span style="color:#1A2B4A;font-weight:700;font-size:1rem;">
             {(doc.bank_name or '').upper()} &nbsp;|&nbsp; Account {doc.account_id}
             &nbsp;|&nbsp; {_period_str(doc)} &nbsp;|&nbsp; {n_txns} transactions
           </span>
-          {risk_badge}
+          <div style="margin-top:10px;">{'&nbsp;&nbsp;'.join(badges)}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -638,20 +645,21 @@ def _render_health_alerts(result: DemoResult) -> None:
 def _render_tab_risk(result: DemoResult) -> None:
     r = result.risk_report
 
-    score    = r.composite_score
-    score_fg = "#991B1B" if score >= 50 else "#92400E" if score >= 20 else "#166534"
-    score_bg = "#FEE2E2" if score >= 50 else "#FEF3C7" if score >= 20 else "#DCFCE7"
+    high = sum(1 for f in r.flags if str(f.severity) == "HIGH")
+    med  = sum(1 for f in r.flags if str(f.severity) == "MEDIUM")
+    low  = sum(1 for f in r.flags if str(f.severity) == "LOW")
     st.markdown(
-        f'<div style="display:inline-block;background:{score_bg};border:2px solid {score_fg};'
-        f'border-radius:8px;padding:12px 24px;margin-bottom:16px;">'
-        f'<span style="font-size:2rem;font-weight:700;color:{score_fg};">{score:.0f}</span>'
-        f'<span style="color:#6B7280;font-size:1rem;"> / 100 composite risk score</span>'
+        f'<div style="display:inline-block;background:#F3F4F6;border:1.5px solid #1A2B4A;'
+        f'border-radius:8px;padding:10px 20px;margin-bottom:16px;">'
+        f'<span style="font-size:1.6rem;font-weight:700;color:#1A2B4A;">{len(r.flags)}</span>'
+        f'<span style="color:#6B7280;font-size:0.9rem;"> risk flag(s) &nbsp;·&nbsp; '
+        f'{high} HIGH &nbsp;/&nbsp; {med} MEDIUM &nbsp;/&nbsp; {low} LOW</span>'
         f'</div>',
         unsafe_allow_html=True,
     )
 
     if not r.flags:
-        st.success("No risk flags detected — statement appears clean.")
+        st.success("No flags detected in scope across the 6 automated detectors.")
         return
 
     st.markdown(f"**{len(r.flags)} flag(s) detected:**")
@@ -1019,7 +1027,7 @@ def _render_tab_reconciliation(result: DemoResult) -> None:
 def _render_download_angel(result: DemoResult) -> None:
     acc = result.doc.account_id
     st.markdown("### Angel Lens — 1-page Investor PDF")
-    st.caption("Concise verdict + KPIs + health signals, formatted for angel investors.")
+    st.caption("Concise summary + KPIs + health signals, formatted for angel investors.")
     st.download_button(
         label="⬇ Download Angel Lens PDF",
         data=result.angel_report_bytes,
@@ -1092,10 +1100,10 @@ def _render_download_workbench(result: DemoResult) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 _LENS_CARDS = [
-    ("👼", "Angel Lens", "1-page PDF", "Verdict, KPIs, runway gauge, and the top health "
+    ("👼", "Angel Lens", "1-page PDF", "Summary, KPIs, runway gauge, and the top health "
      "signals — the quick read for an individual angel investor."),
     ("💼", "VC Lens", "6-sheet XLSX + 3-page PDF", "Financial health, risk flags, customer "
-     "analytics, full transaction ledger, and related parties, with a composite risk score."),
+     "analytics, full transaction ledger, and related parties, with flag counts by severity."),
     ("🏛️", "Workbench Lens", "10-sheet XLSX + 4-page PDF", "The deepest view: everything in "
      "VC Lens plus compliance, reconciliation, customer master, raw data export, and "
      "fund-specific custom detectors."),
@@ -1133,7 +1141,7 @@ def _render_landing() -> None:
          "one — 5 company profiles, 3–24 months, injectable risk flags."),
         ("2 · Analyse", "Extraction → validation → categorisation → related-party tagging → "
          "customer identity → risk → customer analytics → compliance → reconciliation."),
-        ("3 · Review", "Verdict banner, KPIs, six automated red-flag detectors, Indian "
+        ("3 · Review", "Summary paragraph, KPIs, six automated red-flag detectors, Indian "
          "regulatory compliance checks, and pitch-deck reconciliation."),
         ("4 · Export", "Download the Angel, VC, and Workbench reports for this company — or "
          "switch to Network mode to compare a whole cohort at once."),
@@ -1439,14 +1447,25 @@ def _render_network_mode() -> None:
 # the depth appropriate to that stakeholder, with only that lens's report(s)
 # offered for download.
 
+def _render_tab_summary(result: DemoResult) -> None:
+    """One-paragraph synthesis of the whole analysis — see
+    analysis/report_narrative.py. No verdict, no score: describes what was
+    found; the reader forms their own judgment."""
+    st.markdown("### Summary")
+    st.markdown(result.narrative)
+
+
 def _render_angel_mode(result: DemoResult) -> None:
-    """Angel Lens: the quick read — verdict + KPIs (already rendered above) +
-    top health signals + the 1-page PDF. No tabs, no transaction ledger —
-    that depth belongs to VC/Workbench mode, not the angel investor's report."""
-    st.markdown("### Health Signals")
-    _render_health_alerts(result)
-    st.divider()
-    _render_download_angel(result)
+    """Angel Lens: the quick read — KPIs (already rendered above), a summary
+    paragraph, and the top health signals, plus the 1-page PDF. Two tabs
+    only — no transaction ledger, that depth belongs to VC/Workbench mode."""
+    tab_summary, tab_signals = st.tabs(["📝 Summary", "🩺 Health Signals"])
+    with tab_summary:
+        _render_tab_summary(result)
+        st.divider()
+        _render_download_angel(result)
+    with tab_signals:
+        _render_health_alerts(result)
 
 
 def _render_vc_mode(result: DemoResult) -> None:
@@ -1454,7 +1473,8 @@ def _render_vc_mode(result: DemoResult) -> None:
     transaction ledger, and related parties — matches AnalysisResult in
     reports/vc_lens.py exactly (no compliance/reconciliation; those are
     Workbench-only)."""
-    tab_fin, tab_risk, tab_cust, tab_txns, tab_rp, tab_dl = st.tabs([
+    tab_summary, tab_fin, tab_risk, tab_cust, tab_txns, tab_rp, tab_dl = st.tabs([
+        "📝 Summary",
         "📈 Financial",
         "🚩 Risk Flags",
         "👥 Customers",
@@ -1462,6 +1482,8 @@ def _render_vc_mode(result: DemoResult) -> None:
         "🔗 Related Parties",
         "📄 Downloads",
     ])
+    with tab_summary:
+        _render_tab_summary(result)
     with tab_fin:
         _render_tab_financial(result)
     with tab_risk:
@@ -1479,7 +1501,8 @@ def _render_vc_mode(result: DemoResult) -> None:
 def _render_workbench_mode(result: DemoResult) -> None:
     """Workbench Lens: everything — the full analysis depth, plus compliance,
     reconciliation, and the custom-detector-aware risk report."""
-    tab_fin, tab_risk, tab_cust, tab_compliance, tab_recon, tab_txns, tab_rp, tab_dl = st.tabs([
+    tab_summary, tab_fin, tab_risk, tab_cust, tab_compliance, tab_recon, tab_txns, tab_rp, tab_dl = st.tabs([
+        "📝 Summary",
         "📈 Financial",
         "🚩 Risk Flags",
         "👥 Customers",
@@ -1489,6 +1512,8 @@ def _render_workbench_mode(result: DemoResult) -> None:
         "🔗 Related Parties",
         "📄 Downloads",
     ])
+    with tab_summary:
+        _render_tab_summary(result)
     with tab_fin:
         _render_tab_financial(result)
     with tab_risk:
@@ -1511,7 +1536,7 @@ _MODE_HERO = {
     "👼 Angel": (
         "Angel Lens",
         "Upload an HDFC or ICICI bank statement — or generate a synthetic one — for "
-        "the quick read an angel investor needs: verdict, KPIs, and the top health signals.",
+        "the quick read an angel investor needs: a summary, KPIs, and the top health signals.",
     ),
     "💼 VC": (
         "VC Lens",
@@ -1601,7 +1626,7 @@ def main() -> None:
     result: DemoResult = st.session_state.get("result", initial_result)
 
     # ── Render analysis UI ───────────────────────────────────────────────────
-    _render_verdict_banner(result)
+    _render_flag_summary_banner(result)
     _render_kpi_row(result)
 
     status  = result.doc.validation_status
@@ -1612,13 +1637,9 @@ def main() -> None:
     }
     vfg, vbg = v_colours.get(str(status).lower(), ("#374151", "#F3F4F6"))
     n_rp = sum(1 for t in result.doc.transactions if t.is_related_party)
-    compliance_high = result.compliance_report.high_count
-    recon_high = result.reconciliation_report.high_count
     st.markdown(
         '<div style="margin-bottom:8px;">'
         + _badge(f"Validation: {str(status).upper()}", vfg, vbg)
-        + '&nbsp;&nbsp;'
-        + _badge(f"{len(result.doc.transactions)} transactions", "#1E40AF", "#DBEAFE")
         + '&nbsp;&nbsp;'
         + _badge(
             f"{len(result.customer_analytics.monthly_active_customers)} months tracked",
@@ -1626,10 +1647,6 @@ def main() -> None:
           )
         + ('&nbsp;&nbsp;' + _badge(f"{n_rp} related-party txns", "#92400E", "#FEF3C7")
            if n_rp else "")
-        + ('&nbsp;&nbsp;' + _badge(f"{compliance_high} compliance HIGH", "#991B1B", "#FEE2E2")
-           if compliance_high else "")
-        + ('&nbsp;&nbsp;' + _badge(f"{recon_high} recon HIGH", "#991B1B", "#FEE2E2")
-           if recon_high else "")
         + "</div>",
         unsafe_allow_html=True,
     )

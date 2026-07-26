@@ -138,32 +138,36 @@ class TestFourLensModes:
     """Each mode must show only what that lens actually contains — the same
     pipeline run, presented at that stakeholder's depth."""
 
-    def test_angel_mode_is_default_and_has_no_tabs(self) -> None:
+    def test_angel_mode_is_default_and_has_summary_and_signals_tabs(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
         assert at.sidebar.radio[0].value == "👼 Angel"
         at = _generate_and_analyse(at)
         assert not at.exception
-        assert len(at.tabs) == 0  # quick-read view, no tab set at all
+        assert len(at.tabs) == 2  # Summary + Health Signals only
+        tab_labels = [t.label for t in at.tabs]
+        assert "📝 Summary" in tab_labels
+        assert "🩺 Health Signals" in tab_labels
         assert any("Angel Lens" in m.value for m in at.markdown)
-        assert any("Health Signals" in m.value for m in at.markdown)
 
-    def test_vc_mode_has_six_tabs_no_compliance_or_reconciliation(self) -> None:
+    def test_vc_mode_has_seven_tabs_no_compliance_or_reconciliation(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
         at = _generate_and_analyse(at, mode="💼 VC")
         assert not at.exception
-        assert len(at.tabs) == 6
+        assert len(at.tabs) == 7
         tab_labels = [t.label for t in at.tabs]
+        assert "📝 Summary" in tab_labels
         assert "⚖️ Compliance" not in tab_labels
         assert "🔍 Reconciliation" not in tab_labels
         assert "📈 Financial" in tab_labels
         assert "🔗 Related Parties" in tab_labels
 
-    def test_workbench_mode_has_all_eight_tabs(self) -> None:
+    def test_workbench_mode_has_all_nine_tabs(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
         at = _generate_and_analyse(at, mode="🏛️ Workbench")
         assert not at.exception
-        assert len(at.tabs) == 8
+        assert len(at.tabs) == 9
         tab_labels = [t.label for t in at.tabs]
+        assert "📝 Summary" in tab_labels
         assert "⚖️ Compliance" in tab_labels
         assert "🔍 Reconciliation" in tab_labels
 
@@ -174,3 +178,16 @@ class TestFourLensModes:
         assert "Angel Lens" in angel_text
         assert "Workbench Lens" not in angel_text
         assert "VC Lens" not in angel_text
+
+    def test_no_verdict_label_or_composite_score_anywhere(self) -> None:
+        """Wave 4.5 — INVESTABLE/MONITOR/CAUTION and the composite risk
+        score/100 gauge must not appear anywhere in the live UI; flag counts
+        by severity replace them."""
+        at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at = _generate_and_analyse(at, mode="🏛️ Workbench")
+        assert not at.exception
+        all_markdown = " ".join(m.value for m in at.markdown)
+        for label in ("INVESTABLE", "MONITOR", "CAUTION"):
+            assert label not in all_markdown
+        assert "/ 100" not in all_markdown
+        assert "Risk flags" in all_markdown or "risk flag" in all_markdown.lower()

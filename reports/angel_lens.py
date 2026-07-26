@@ -3,12 +3,16 @@
 Layout (top to bottom):
   Header bar      — title + generation date
   Company row     — account name, bank, period
-  Verdict         — INVESTABLE / MONITOR / CAUTION with one-line rationale
-  Risk mini-row   — composite score, flag count, severity breakdown
+  Summary         — one-paragraph synthesis of the findings (no verdict)
+  Flag summary    — risk flag / financial health alert counts by severity
   KPI grid        — Revenue · Burn · Runway · MoM Growth
   Monthly table   — up to 6 months of Revenue / Burn / Net
   Health Signals  — 6-8 explanatory observations (financial + customer + risk)
   Footer          — disclaimer
+
+This report deliberately does not render an investment verdict (no
+INVESTABLE/MONITOR/CAUTION label) or a composite risk score — it surfaces
+counts and evidence; the reader forms their own judgment.
 
 Usage:
     from reports.angel_lens import AngelLensReport
@@ -50,12 +54,6 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 _DARK_BLUE  = colors.HexColor("#1A2B4A")
 _ACCENT     = colors.HexColor("#2563EB")
-_GREEN      = colors.HexColor("#166534")
-_GREEN_BG   = colors.HexColor("#DCFCE7")
-_AMBER      = colors.HexColor("#92400E")
-_AMBER_BG   = colors.HexColor("#FEF3C7")
-_RED        = colors.HexColor("#991B1B")
-_RED_BG     = colors.HexColor("#FEE2E2")
 _LIGHT_GREY = colors.HexColor("#F3F4F6")
 _MID_GREY   = colors.HexColor("#6B7280")
 _TABLE_HEAD = colors.HexColor("#E5E7EB")
@@ -91,8 +89,6 @@ _S_LABEL         = _style("Label",     "Helvetica",       7, 10, _MID_GREY,   TA
 _S_BODY          = _style("Body",      "Helvetica",       8, 11, colors.black, TA_LEFT)
 _S_COMPANY       = _style("Company",   "Helvetica-Bold", 10, 13, _DARK_BLUE,  TA_LEFT)
 _S_SUBLINE       = _style("Subline",   "Helvetica",       8, 10, _MID_GREY,   TA_LEFT)
-_S_VERDICT_LABEL = _style("VrdLbl",    "Helvetica-Bold", 13, 17, colors.black, TA_CENTER)
-_S_VERDICT_RAT   = _style("VrdRat",    "Helvetica",       8, 11, _MID_GREY,   TA_CENTER)
 _S_KPI_VALUE     = _style("KpiVal",    "Helvetica-Bold", 13, 16, _DARK_BLUE,  TA_CENTER)
 _S_KPI_LABEL     = _style("KpiLbl",    "Helvetica",       7, 10, _MID_GREY,   TA_CENTER)
 _S_TBL_HEAD      = _style("TblHead",   "Helvetica-Bold",  8, 10, _DARK_BLUE,  TA_LEFT)
@@ -103,58 +99,6 @@ _S_SECTION       = _style("Section",   "Helvetica-Bold",  9, 12, _DARK_BLUE,  TA
 _S_FOOTER        = _style("Footer",    "Helvetica",        7,  9, _MID_GREY,  TA_CENTER)
 _S_RISK_LABEL    = _style("RLbl",      "Helvetica",        8, 10, _MID_GREY,  TA_CENTER)
 _S_RISK_VALUE    = _style("RVal",      "Helvetica-Bold",  10, 13, _DARK_BLUE, TA_CENTER)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Verdict logic
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _verdict(metrics: FinancialMetrics) -> tuple[str, object, object]:
-    """Return (label, text_colour, bg_colour) for the verdict banner."""
-    runway = metrics.runway_months or _ZERO
-    growth = metrics.avg_mom_growth or _ZERO
-
-    if metrics.is_profitable and growth >= _ZERO:
-        return "INVESTABLE", _GREEN, _GREEN_BG
-    if runway >= Decimal("6") and growth >= _ZERO:
-        return "INVESTABLE", _GREEN, _GREEN_BG
-    if metrics.is_profitable or runway >= Decimal("3"):
-        return "MONITOR", _AMBER, _AMBER_BG
-    return "CAUTION", _RED, _RED_BG
-
-
-def _verdict_rationale(
-    metrics: FinancialMetrics,
-    risk_report: object | None,
-    ca: object | None,
-) -> str:
-    """One-line rationale explaining the verdict decision."""
-    runway = metrics.runway_months
-    growth = metrics.avg_mom_growth
-    label, _, _ = _verdict(metrics)
-
-    parts = []
-    if metrics.is_profitable:
-        parts.append("cash-flow positive")
-    if runway is not None:
-        parts.append(f"{float(runway):.1f}mo runway")
-    if growth is not None:
-        pct = float(growth) * 100
-        parts.append(f"{pct:+.1f}% MoM revenue growth")
-
-    if ca is not None:
-        nrr_vals = list(ca.nrr_per_month.values())
-        if nrr_vals:
-            nrr = nrr_vals[-1]
-            parts.append(f"NRR {nrr*100:.0f}%")
-
-    reason = " · ".join(parts) if parts else "based on available financial data"
-
-    if label == "INVESTABLE":
-        return f"Meets automated screening criteria for further diligence — {reason}"
-    if label == "MONITOR":
-        return f"Borderline — {reason}; track for 60–90 days before further diligence"
-    return f"High risk — {reason}; significant concerns warrant resolution before further diligence"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,14 +309,14 @@ class AngelLensReport:
         company_name: str | None = None,
         risk_report: object | None = None,
         customer_analytics: object | None = None,
+        health_report: object | None = None,
+        narrative: str | None = None,
     ) -> Path:
         """Write the PDF and return the output path."""
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
 
         display_name = company_name or f"Account {doc.account_id}"
-        verdict_label, verdict_fg, verdict_bg = _verdict(metrics)
-        rationale = _verdict_rationale(metrics, risk_report, customer_analytics)
 
         pdf = SimpleDocTemplate(
             str(out), pagesize=A4,
@@ -382,8 +326,8 @@ class AngelLensReport:
 
         story: list = []
         story += self._build_header(display_name, doc)
-        story += self._build_verdict(verdict_label, verdict_fg, verdict_bg, rationale)
-        story += self._build_risk_mini(risk_report)
+        story += self._build_summary_paragraph(narrative)
+        story += self._build_flag_summary(risk_report, health_report)
         story += self._build_kpi_row(metrics)
         story += self._build_monthly_table(metrics)
         story += self._build_signals(metrics, risk_report, customer_analytics)
@@ -427,73 +371,68 @@ class AngelLensReport:
             Spacer(1, 4),
         ]
 
-    def _build_verdict(
-        self, label: str, fg: object, bg: object, rationale: str
-    ) -> list:
-        data = [
-            [Paragraph(f"&bull; &nbsp; {label} &nbsp; &bull;", _S_VERDICT_LABEL)],
-            [Paragraph(rationale, _S_VERDICT_RAT)],
+    def _build_summary_paragraph(self, narrative: str | None) -> list:
+        if not narrative:
+            return []
+        return [
+            Paragraph("Summary", _S_SECTION),
+            Paragraph(narrative, _S_BODY),
+            Spacer(1, 5),
         ]
-        tbl = Table(data, colWidths=[self.COL_WIDTH])
-        tbl.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (-1, -1), bg),
-            ("TEXTCOLOR",     (0, 0), (0, 0),   fg),
-            ("TOPPADDING",    (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("BOX",           (0, 0), (-1, -1), 0.5, fg),
-        ]))
-        return [tbl, Spacer(1, 4)]
 
-    def _build_risk_mini(self, risk_report: object | None) -> list:
-        if risk_report is None:
+    def _build_flag_summary(
+        self, risk_report: object | None, health_report: object | None,
+    ) -> list:
+        """Counts by severity — replaces the removed verdict banner and
+        composite risk score. No score, no INVESTABLE/MONITOR/CAUTION label."""
+        rows: list[tuple[str, int, int, int, int]] = []
+
+        if risk_report is not None:
+            flags = risk_report.flags
+            high   = sum(1 for f in flags if str(f.severity) == "HIGH")
+            medium = sum(1 for f in flags if str(f.severity) == "MEDIUM")
+            low    = sum(1 for f in flags if str(f.severity) == "LOW")
+            rows.append(("Risk flags", len(flags), high, medium, low))
+
+        if health_report is not None:
+            alerts = health_report.alerts
+            high   = sum(1 for a in alerts if str(a.severity) == "HIGH")
+            medium = sum(1 for a in alerts if str(a.severity) == "MEDIUM")
+            low    = sum(1 for a in alerts if str(a.severity) == "LOW")
+            rows.append(("Financial health alerts", len(alerts), high, medium, low))
+
+        if not rows:
             return []
 
-        score = risk_report.composite_score
-        flags = risk_report.flags
-        high   = sum(1 for f in flags if str(f.severity) == "HIGH")
-        medium = sum(1 for f in flags if str(f.severity) == "MEDIUM")
-        low    = sum(1 for f in flags if str(f.severity) == "LOW")
-
-        if score >= 50:
-            score_color = _RED
-            score_bg = _RED_BG
-        elif score >= 20:
-            score_color = _AMBER
-            score_bg = _AMBER_BG
-        else:
-            score_color = _GREEN
-            score_bg = _GREEN_BG
-
-        severity_str = f"{high} HIGH · {medium} MED · {low} LOW"
-        flag_str = f"{len(flags)} flag(s)" if flags else "No flags"
-
-        score_style = ParagraphStyle("RS", fontName="Helvetica-Bold", fontSize=11,
-                                     textColor=score_color, alignment=TA_CENTER)
+        head_style = ParagraphStyle("FSH", fontName="Helvetica-Bold", fontSize=7.5,
+                                     textColor=_MID_GREY, alignment=TA_CENTER)
+        label_style = ParagraphStyle("FSL", fontName="Helvetica", fontSize=8,
+                                      textColor=colors.black, alignment=TA_LEFT)
+        val_style = ParagraphStyle("FSV", fontName="Helvetica-Bold", fontSize=8,
+                                    textColor=_DARK_BLUE, alignment=TA_CENTER)
 
         data = [[
-            Paragraph(f"{score:.0f}<br/><font size='6'>/ 100</font>", score_style),
-            Paragraph(f"{flag_str}<br/><font size='6'>{severity_str}</font>",
-                      ParagraphStyle("RF", fontName="Helvetica", fontSize=8,
-                                     textColor=score_color, alignment=TA_CENTER, leading=11)),
-            Paragraph(
-                f"Risk score 0–100 (0=clean, ≥50=serious concerns). "
-                f"{'No automated risk patterns detected.' if not flags else 'Review the risk flags section in the VC Lens report for full details.'}",
-                ParagraphStyle("RN", fontName="Helvetica", fontSize=7,
-                               textColor=_MID_GREY, alignment=TA_LEFT, leading=10)
-            ),
+            Paragraph("Category", head_style), Paragraph("Total", head_style),
+            Paragraph("High", head_style), Paragraph("Medium", head_style),
+            Paragraph("Low", head_style),
         ]]
+        for label, total, h, m, l in rows:
+            data.append([
+                Paragraph(label, label_style), Paragraph(str(total), val_style),
+                Paragraph(str(h), val_style), Paragraph(str(m), val_style),
+                Paragraph(str(l), val_style),
+            ])
+
         tbl = Table(data, colWidths=[
-            self.COL_WIDTH * 0.12,
-            self.COL_WIDTH * 0.25,
-            self.COL_WIDTH * 0.63,
+            self.COL_WIDTH * 0.40, self.COL_WIDTH * 0.15,
+            self.COL_WIDTH * 0.15, self.COL_WIDTH * 0.15, self.COL_WIDTH * 0.15,
         ])
         tbl.setStyle(TableStyle([
-            ("BACKGROUND",    (0, 0), (1, 0), score_bg),
-            ("TOPPADDING",    (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("LEFTPADDING",   (0, 0), (-1, -1), 6),
+            ("BACKGROUND",    (0, 0), (-1, 0), _TABLE_HEAD),
+            ("GRID",          (0, 0), (-1, -1), 0.3, _TABLE_HEAD),
+            ("TOPPADDING",    (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
             ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
-            ("BOX",           (0, 0), (1, 0), 0.5, score_color),
         ]))
         return [tbl, Spacer(1, 5)]
 

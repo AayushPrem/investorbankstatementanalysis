@@ -67,11 +67,15 @@ class TestDemoResultStructure:
     def test_report_is_valid_pdf(self, hdfc_result: DemoResult) -> None:
         assert hdfc_result.report_bytes[:5] == b"%PDF-"
 
-    def test_has_verdict_label(self, hdfc_result: DemoResult) -> None:
-        assert hdfc_result.verdict_label in {"INVESTABLE", "MONITOR", "CAUTION"}
+    def test_has_narrative(self, hdfc_result: DemoResult) -> None:
+        """Wave 4.5 — no verdict_label anymore; every result gets a summary
+        narrative instead (no INVESTABLE/MONITOR/CAUTION rendered anywhere)."""
+        assert isinstance(hdfc_result.narrative, str)
+        assert len(hdfc_result.narrative) > 20
 
-    def test_icici_also_has_verdict(self, icici_result: DemoResult) -> None:
-        assert icici_result.verdict_label in {"INVESTABLE", "MONITOR", "CAUTION"}
+    def test_icici_also_has_narrative(self, icici_result: DemoResult) -> None:
+        assert isinstance(icici_result.narrative, str)
+        assert len(icici_result.narrative) > 20
 
 
 # ─── Pipeline correctness via DemoResult ─────────────────────────────────────
@@ -107,12 +111,15 @@ class TestPipelineCorrectness:
         ]
         assert uncategorised == []
 
-    def test_healthy_saas_is_investable_or_monitor(self, hdfc_result: DemoResult) -> None:
-        assert hdfc_result.verdict_label in {"INVESTABLE", "MONITOR"}
+    def test_healthy_saas_has_positive_revenue_trend_in_narrative(self, hdfc_result: DemoResult) -> None:
+        # healthy_saas grows steadily — narrative should mention growth, not decline
+        assert "declining" not in hdfc_result.narrative.lower()
 
-    def test_burning_startup_verdict_is_not_investable(self, icici_result: DemoResult) -> None:
-        # burning_startup is cash-flow negative with short runway
-        assert icici_result.verdict_label in {"MONITOR", "CAUTION"}
+    def test_burning_startup_flagged_in_health_or_risk(self, icici_result: DemoResult) -> None:
+        # burning_startup is cash-flow negative with short runway — this must
+        # surface as either a risk flag or a financial health alert somewhere,
+        # not necessarily via any single specific one.
+        assert icici_result.risk_report.flags or icici_result.health_report.alerts
 
 
 # ─── Different file hash → re-run isolation ───────────────────────────────────
@@ -125,11 +132,11 @@ class TestRunIsolation:
         assert hdfc.doc.account_id != icici.doc.account_id
 
     def test_same_bytes_returns_consistent_result(self) -> None:
-        """Running on the same PDF twice gives the same verdict."""
+        """Running on the same PDF twice gives the same summary narrative."""
         b = _gold_pdf_bytes(_HDFC_STEM)
         r1 = run_pipeline_on_bytes(b, "a.pdf")
         r2 = run_pipeline_on_bytes(b, "b.pdf")
-        assert r1.verdict_label == r2.verdict_label
+        assert r1.narrative == r2.narrative
         assert r1.metrics.total_revenue == r2.metrics.total_revenue
 
     def test_temp_files_cleaned_up(self) -> None:
@@ -179,6 +186,6 @@ class TestAllGoldPDFs:
     def test_pipeline_runs_on_gold_pdf(self, pdf_path: Path) -> None:
         """Every gold PDF should produce a valid DemoResult without crashing."""
         result = run_pipeline_on_bytes(pdf_path.read_bytes(), pdf_path.name)
-        assert result.verdict_label in {"INVESTABLE", "MONITOR", "CAUTION"}
+        assert isinstance(result.narrative, str) and len(result.narrative) > 0
         assert result.report_bytes[:5] == b"%PDF-"
         assert len(result.doc.transactions) > 0
