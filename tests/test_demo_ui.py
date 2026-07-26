@@ -1,8 +1,7 @@
 """End-to-end tests for demo/app.py, driven via Streamlit's AppTest harness
-(no browser required) (Sprint 4, Step 4.3).
+(no browser required) (Sprint 4, Step 4.3; mode split into 4 lenses later).
 
-Covers the Network (multi-company) mode added in Sprint 4 and confirms
-Single Company mode still works unchanged.
+Covers all four analysis modes: Angel, VC, Workbench, Network.
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ def _no_llm(monkeypatch: pytest.MonkeyPatch) -> None:
 class TestNetworkMode:
     def test_mode_switch_with_no_files_shows_prompt(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
-        at.sidebar.radio[0].set_value("Network (multi-company)")
+        at.sidebar.radio[0].set_value("🌐 Network")
         at.run()
         assert not at.exception
         assert any("Add at least two statements" in i.value for i in at.info)
@@ -45,7 +44,7 @@ class TestNetworkMode:
         self, synthetic_pdfs: list[tuple[str, bytes, str]]
     ) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
-        at.sidebar.radio[0].set_value("Network (multi-company)")
+        at.sidebar.radio[0].set_value("🌐 Network")
         at.run()
 
         at.file_uploader[0].set_value(synthetic_pdfs)
@@ -67,7 +66,7 @@ class TestNetworkMode:
         self, synthetic_pdfs: list[tuple[str, bytes, str]]
     ) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
-        at.sidebar.radio[0].set_value("Network (multi-company)")
+        at.sidebar.radio[0].set_value("🌐 Network")
         at.run()
 
         at.file_uploader[0].set_value(synthetic_pdfs)
@@ -90,7 +89,7 @@ class TestNetworkMode:
 
     def test_generate_synthetic_cohort_and_run(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
-        at.sidebar.radio[0].set_value("Network (multi-company)")
+        at.sidebar.radio[0].set_value("🌐 Network")
         at.run()
 
         source_radio = next(r for r in at.radio if "🏗️ Generate Synthetic Cohort" in r.options)
@@ -119,17 +118,59 @@ class TestNetworkMode:
         assert "network_pdf_bytes" in at.session_state
 
 
-class TestSingleCompanyModeUnchanged:
-    def test_generate_and_analyse_still_renders_all_tabs(self) -> None:
+def _generate_and_analyse(at: AppTest, mode: str | None = None) -> AppTest:
+    """Optionally switch analysis mode, then generate a synthetic statement
+    and run the pipeline. Returns the AppTest after the run."""
+    if mode is not None:
+        at.sidebar.radio[0].set_value(mode)
+        at.run()
+    at.sidebar.radio[1].set_value("🏗️ Generate Synthetic")
+    at.run()
+    assert not at.exception
+
+    gen_btn = next(b for b in at.button if "Generate & Analyse" in b.label)
+    gen_btn.click()
+    at.run()
+    return at
+
+
+class TestFourLensModes:
+    """Each mode must show only what that lens actually contains — the same
+    pipeline run, presented at that stakeholder's depth."""
+
+    def test_angel_mode_is_default_and_has_no_tabs(self) -> None:
         at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
-        # Default mode is already "Single Company"; switch statement source
-        at.sidebar.radio[1].set_value("🏗️ Generate Synthetic")
-        at.run()
+        assert at.sidebar.radio[0].value == "👼 Angel"
+        at = _generate_and_analyse(at)
         assert not at.exception
+        assert len(at.tabs) == 0  # quick-read view, no tab set at all
+        assert any("Angel Lens" in m.value for m in at.markdown)
+        assert any("Health Signals" in m.value for m in at.markdown)
 
-        gen_btn = next(b for b in at.button if "Generate & Analyse" in b.label)
-        gen_btn.click()
-        at.run()
+    def test_vc_mode_has_six_tabs_no_compliance_or_reconciliation(self) -> None:
+        at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at = _generate_and_analyse(at, mode="💼 VC")
+        assert not at.exception
+        assert len(at.tabs) == 6
+        tab_labels = [t.label for t in at.tabs]
+        assert "⚖️ Compliance" not in tab_labels
+        assert "🔍 Reconciliation" not in tab_labels
+        assert "📈 Financial" in tab_labels
+        assert "🔗 Related Parties" in tab_labels
 
+    def test_workbench_mode_has_all_eight_tabs(self) -> None:
+        at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at = _generate_and_analyse(at, mode="🏛️ Workbench")
         assert not at.exception
         assert len(at.tabs) == 8
+        tab_labels = [t.label for t in at.tabs]
+        assert "⚖️ Compliance" in tab_labels
+        assert "🔍 Reconciliation" in tab_labels
+
+    def test_each_mode_offers_only_its_own_lens_download(self) -> None:
+        at_angel = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at_angel = _generate_and_analyse(at_angel)
+        angel_text = " ".join(m.value for m in at_angel.markdown)
+        assert "Angel Lens" in angel_text
+        assert "Workbench Lens" not in angel_text
+        assert "VC Lens" not in angel_text

@@ -3,13 +3,15 @@
 Run:
     streamlit run demo/app.py
 
-Single Company mode: upload an HDFC or ICICI bank statement PDF, or generate
-a synthetic one right inside the app. Shows financial health, risk flags,
-customer analytics, related parties (auto-detected), Indian compliance, and
-pitch-deck reconciliation, with Angel/VC/Workbench report downloads.
+Four analysis modes — one per report lens, same underlying pipeline:
 
+Angel mode: the quick read — verdict, KPIs, top health signals, 1-page PDF.
+VC mode: financial health, risk flags, customer analytics, transaction
+    ledger, related parties — matches the VC Lens XLSX/PDF exactly.
+Workbench mode: everything above plus Indian compliance and pitch-deck
+    reconciliation — the deepest view, matching the Workbench Lens.
 Network mode: upload multiple statements, or generate a synthetic cohort, to
-compare portfolio companies side by side via the Network Lens.
+    compare portfolio companies side by side via the Network Lens.
 """
 from __future__ import annotations
 
@@ -229,7 +231,7 @@ def _render_sidebar_header() -> str:
         )
         analysis_mode = st.radio(
             "Analysis mode",
-            ["Single Company", "Network (multi-company)"],
+            ["👼 Angel", "💼 VC", "🏛️ Workbench", "🌐 Network"],
             key="analysis_mode",
         )
         st.divider()
@@ -1014,9 +1016,8 @@ def _render_tab_reconciliation(result: DemoResult) -> None:
 # Tab 8: Downloads
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _render_tab_downloads(result: DemoResult) -> None:
+def _render_download_angel(result: DemoResult) -> None:
     acc = result.doc.account_id
-
     st.markdown("### Angel Lens — 1-page Investor PDF")
     st.caption("Concise verdict + KPIs + health signals, formatted for angel investors.")
     st.download_button(
@@ -1028,7 +1029,9 @@ def _render_tab_downloads(result: DemoResult) -> None:
         key="dl_angel",
     )
 
-    st.divider()
+
+def _render_download_vc(result: DemoResult) -> None:
+    acc = result.doc.account_id
     st.markdown("### VC Lens — 6-sheet XLSX Workbook")
     st.caption(
         "Full workbook: Summary · Financial Health · Red Flags · "
@@ -1054,7 +1057,9 @@ def _render_tab_downloads(result: DemoResult) -> None:
         key="dl_vc_pdf",
     )
 
-    st.divider()
+
+def _render_download_workbench(result: DemoResult) -> None:
+    acc = result.doc.account_id
     st.markdown("### Workbench Lens — 10-sheet XLSX")
     st.caption(
         "Deepest institutional workbook: Executive Summary · Financial Health · Risk Flags · "
@@ -1427,23 +1432,116 @@ def _render_network_mode() -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Per-lens analysis modes
+# ─────────────────────────────────────────────────────────────────────────────
+# Each mode shows only what that lens actually contains — the point is to
+# demonstrate "one engine, many lenses": the same pipeline run, presented at
+# the depth appropriate to that stakeholder, with only that lens's report(s)
+# offered for download.
+
+def _render_angel_mode(result: DemoResult) -> None:
+    """Angel Lens: the quick read — verdict + KPIs (already rendered above) +
+    top health signals + the 1-page PDF. No tabs, no transaction ledger —
+    that depth belongs to VC/Workbench mode, not the angel investor's report."""
+    st.markdown("### Health Signals")
+    _render_health_alerts(result)
+    st.divider()
+    _render_download_angel(result)
+
+
+def _render_vc_mode(result: DemoResult) -> None:
+    """VC Lens: financial health, risk flags, customer analytics, the full
+    transaction ledger, and related parties — matches AnalysisResult in
+    reports/vc_lens.py exactly (no compliance/reconciliation; those are
+    Workbench-only)."""
+    tab_fin, tab_risk, tab_cust, tab_txns, tab_rp, tab_dl = st.tabs([
+        "📈 Financial",
+        "🚩 Risk Flags",
+        "👥 Customers",
+        "📋 Transactions",
+        "🔗 Related Parties",
+        "📄 Downloads",
+    ])
+    with tab_fin:
+        _render_tab_financial(result)
+    with tab_risk:
+        _render_tab_risk(result)
+    with tab_cust:
+        _render_tab_customers(result)
+    with tab_txns:
+        _render_tab_transactions(result)
+    with tab_rp:
+        _render_tab_related_parties(result)
+    with tab_dl:
+        _render_download_vc(result)
+
+
+def _render_workbench_mode(result: DemoResult) -> None:
+    """Workbench Lens: everything — the full analysis depth, plus compliance,
+    reconciliation, and the custom-detector-aware risk report."""
+    tab_fin, tab_risk, tab_cust, tab_compliance, tab_recon, tab_txns, tab_rp, tab_dl = st.tabs([
+        "📈 Financial",
+        "🚩 Risk Flags",
+        "👥 Customers",
+        "⚖️ Compliance",
+        "🔍 Reconciliation",
+        "📋 Transactions",
+        "🔗 Related Parties",
+        "📄 Downloads",
+    ])
+    with tab_fin:
+        _render_tab_financial(result)
+    with tab_risk:
+        _render_tab_risk(result)
+    with tab_cust:
+        _render_tab_customers(result)
+    with tab_compliance:
+        _render_tab_compliance(result)
+    with tab_recon:
+        _render_tab_reconciliation(result)
+    with tab_txns:
+        _render_tab_transactions(result)
+    with tab_rp:
+        _render_tab_related_parties(result)
+    with tab_dl:
+        _render_download_workbench(result)
+
+
+_MODE_HERO = {
+    "👼 Angel": (
+        "Angel Lens",
+        "Upload an HDFC or ICICI bank statement — or generate a synthetic one — for "
+        "the quick read an angel investor needs: verdict, KPIs, and the top health signals.",
+    ),
+    "💼 VC": (
+        "VC Lens",
+        "Upload an HDFC or ICICI bank statement — or generate a synthetic one — for "
+        "financial health, risk flags, customer analytics, the full transaction ledger, "
+        "and related parties.",
+    ),
+    "🏛️ Workbench": (
+        "Investor Workbench",
+        "Upload an HDFC or ICICI bank statement — or generate a synthetic one — for "
+        "financial health, risk flags, customer analytics, Indian compliance, pitch-deck "
+        "reconciliation, and every downloadable investor report.",
+    ),
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     analysis_mode = _render_sidebar_header()
-    if analysis_mode == "Network (multi-company)":
+    if analysis_mode == "🌐 Network":
         _render_network_mode()
         return
 
     pdf_bytes, source_name, company_name = _sidebar()
 
-    _hero(
-        "Investor Workbench",
-        "Upload an HDFC or ICICI bank statement — or generate a synthetic one — for "
-        "financial health, risk flags, customer analytics, Indian compliance, pitch-deck "
-        "reconciliation, and four downloadable investor reports.",
-    )
+    hero_title, hero_subtitle = _MODE_HERO[analysis_mode]
+    _hero(hero_title, hero_subtitle)
 
     if pdf_bytes is None:
         _render_landing()
@@ -1537,40 +1635,12 @@ def main() -> None:
     )
     st.divider()
 
-    tab_fin, tab_risk, tab_cust, tab_compliance, tab_recon, tab_txns, tab_rp, tab_dl = st.tabs([
-        "📈 Financial",
-        "🚩 Risk Flags",
-        "👥 Customers",
-        "⚖️ Compliance",
-        "🔍 Reconciliation",
-        "📋 Transactions",
-        "🔗 Related Parties",
-        "📄 Downloads",
-    ])
-
-    with tab_fin:
-        _render_tab_financial(result)
-
-    with tab_risk:
-        _render_tab_risk(result)
-
-    with tab_cust:
-        _render_tab_customers(result)
-
-    with tab_compliance:
-        _render_tab_compliance(result)
-
-    with tab_recon:
-        _render_tab_reconciliation(result)
-
-    with tab_txns:
-        _render_tab_transactions(result)
-
-    with tab_rp:
-        _render_tab_related_parties(result)
-
-    with tab_dl:
-        _render_tab_downloads(result)
+    if analysis_mode == "👼 Angel":
+        _render_angel_mode(result)
+    elif analysis_mode == "💼 VC":
+        _render_vc_mode(result)
+    else:
+        _render_workbench_mode(result)
 
 
 if __name__ == "__main__":
