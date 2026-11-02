@@ -106,15 +106,25 @@ _RULES: list[tuple[re.Pattern[str] | None, bool | None, TransactionCategory]] = 
 ]
 
 
-def _rule_classify(txn: CanonicalTransaction) -> TransactionCategory | None:
-    """Return the first matching rule's category, or None if no rule fired."""
+def match_rule(txn: CanonicalTransaction) -> tuple[int, TransactionCategory] | None:
+    """Return ``(rule index in _RULES, category)`` of the first matching rule, or None.
+
+    Public so the data platform can record which rule categorised a row
+    (``categorisations.rule_id``) without duplicating the rule loop.
+    """
     is_credit = txn.credit is not None
-    for pattern, requires_credit, category in _RULES:
+    for idx, (pattern, requires_credit, category) in enumerate(_RULES):
         if requires_credit is not None and requires_credit != is_credit:
             continue
         if pattern is None or pattern.search(txn.description):
-            return category
+            return idx, category
     return None  # unreachable with catch-all rules, but kept for type safety
+
+
+def _rule_classify(txn: CanonicalTransaction) -> TransactionCategory | None:
+    """Return the first matching rule's category, or None if no rule fired."""
+    hit = match_rule(txn)
+    return hit[1] if hit is not None else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

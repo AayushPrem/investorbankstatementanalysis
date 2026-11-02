@@ -11,6 +11,9 @@ from demo.components.labels import ALL_FLAGS, FLAG_LABELS, PROFILE_LABELS
 from demo.pipeline_runner import DemoResult
 from pipeline.related_party import Affiliate, extract_counterparties
 
+# relationship recorded for counterparties the user marks as affiliates in the sidebar
+USER_TAGGED_RELATIONSHIP = "user_tagged"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar — generator + upload + pipeline info
 # ─────────────────────────────────────────────────────────────────────────────
@@ -261,4 +264,9 @@ def affiliate_selector(initial_result: DemoResult) -> list[Affiliate]:
             label_visibility="collapsed",
         )
 
-    return [Affiliate(name=label_to_name[lbl]) for lbl in selected_labels]
+    # Affiliate.relationship is required; the UI doesn't ask for one, so tag it
+    # as user-selected. (Pre-Phase-2 this omitted it and raised ValidationError.)
+    return [
+        Affiliate(name=label_to_name[lbl], relationship=USER_TAGGED_RELATIONSHIP)
+        for lbl in selected_labels
+    ]

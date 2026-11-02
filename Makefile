@@ -14,15 +14,15 @@ PY := $(VENV_BIN)/python
 
 # Packages gated by mypy in CI (must be clean). Widen as errors are fixed;
 # see docs/CHANGELOG_UPGRADE.md for the current remaining scope.
-TYPECHECK_GATED := schema/ pipeline/ config/ llm/
-TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ analysis/ adapters/ reports/ tools/ jurisdictions/
+TYPECHECK_GATED := schema/ pipeline/ config/ llm/ db/ api/ worker/
+TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ db/ api/ worker/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
-.PHONY: install gold test lint typecheck typecheck-all regression all demo
+.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker
 
 install:
 	$(BOOTSTRAP_PY) -m venv $(VENV)
 	$(PY) -m pip install --upgrade pip
-	$(PY) -m pip install -e ".[dev,ocr,embeddings]"
+	$(PY) -m pip install -e ".[dev,ocr,embeddings,platform]"
 
 gold:
 	$(PY) -m scripts.build_gold_set
@@ -47,3 +47,13 @@ all: lint typecheck test regression
 
 demo:
 	$(PY) -m streamlit run demo/app.py
+
+# ── Data platform (Phase 2). Needs DATABASE_URL; see .env.example / docker-compose.yml.
+migrate:
+	$(PY) -m alembic upgrade head
+
+api:
+	$(PY) -m uvicorn api.main:app --reload
+
+worker:
+	$(PY) -m worker

@@ -45,6 +45,16 @@ class Settings(BaseSettings):
     models_dir: str = "models"
     embeddings_enabled: bool = False
 
+    # ── Phase 2: data platform (db/, api/, worker/) ─────────────────────────
+    # SHA-256 hex digest of the API key clients send in X-API-Key. Unset → the
+    # API refuses every authenticated request (fail closed).
+    api_key_hash: SecretStr | None = None
+    max_upload_bytes: int = 20 * 1024 * 1024
+    job_lease_s: float = 300.0       # a running job untouched this long is reclaimable
+    job_max_attempts: int = 3
+    job_backoff_s: float = 5.0       # retry delay = job_backoff_s * 2**(attempts-1)
+    worker_poll_s: float = 1.0
+
     @property
     def llm_available(self) -> bool:
         """True when the LLM may be called: enabled and a non-empty key is set."""

@@ -30,7 +30,7 @@ from analysis.financial_health_alerts import FinancialHealthReport
 from analysis.reconciliation import CompanyClaims, ReconciliationReport
 from analysis.risk import RiskReport
 from pipeline.related_party import Affiliate
-from pipeline.run import AnalysisOptions, run_analysis
+from pipeline.run import AnalysisOptions, AnalysisResult, run_analysis
 from pipeline.validator import ValidationFailedError, Validator  # noqa: F401
 from reports.angel_lens import AngelLensReport
 from reports.vc_lens import AnalysisResult as VCAnalysisResult
@@ -61,18 +61,23 @@ class DemoResult:
         self.report_bytes = self.angel_report_bytes
 
 
-def run_pipeline_on_bytes(
-    pdf_bytes: bytes,
-    filename: str,
-    affiliates: list[Affiliate] | None = None,
-    company_name: str | None = None,
-    claims: CompanyClaims | None = None,
-) -> DemoResult:
-    """Run the full pipeline on raw statement bytes and render all report lenses."""
-    analysis = run_analysis(
-        pdf_bytes, filename,
-        options=AnalysisOptions(affiliates=affiliates, company_name=company_name, claims=claims),
-    )
+@dataclass
+class RenderedReports:
+    """Every lens rendered for one analysis (bytes only)."""
+
+    angel_pdf: bytes
+    vc_xlsx: bytes
+    vc_pdf: bytes
+    workbench_xlsx: bytes
+    workbench_pdf: bytes
+
+
+def render_reports(analysis: AnalysisResult) -> RenderedReports:
+    """Render the Angel/VC/Workbench lenses for a finished analysis.
+
+    Split out of ``run_pipeline_on_bytes`` in Phase 2 so the job worker can
+    render (and store) the same reports. The rendering itself is unchanged.
+    """
     doc, metrics = analysis.doc, analysis.metrics
     risk_report, customer_analytics = analysis.risk_report, analysis.customer_analytics
     health_report, narrative, cname = analysis.health_report, analysis.narrative, analysis.company_name
@@ -107,18 +112,40 @@ def run_pipeline_on_bytes(
     )
     wb_xlsx, wb_pdf = WorkbenchLensReport().generate(workbench_result)
 
+    return RenderedReports(
+        angel_pdf=angel_bytes,
+        vc_xlsx=vc_xlsx,
+        vc_pdf=vc_pdf,
+        workbench_xlsx=wb_xlsx,
+        workbench_pdf=wb_pdf,
+    )
+
+
+def run_pipeline_on_bytes(
+    pdf_bytes: bytes,
+    filename: str,
+    affiliates: list[Affiliate] | None = None,
+    company_name: str | None = None,
+    claims: CompanyClaims | None = None,
+) -> DemoResult:
+    """Run the full pipeline on raw statement bytes and render all report lenses."""
+    analysis = run_analysis(
+        pdf_bytes, filename,
+        options=AnalysisOptions(affiliates=affiliates, company_name=company_name, claims=claims),
+    )
+    reports = render_reports(analysis)
     return DemoResult(
-        doc=doc,
-        metrics=metrics,
-        risk_report=risk_report,
-        customer_analytics=customer_analytics,
-        health_report=health_report,
+        doc=analysis.doc,
+        metrics=analysis.metrics,
+        risk_report=analysis.risk_report,
+        customer_analytics=analysis.customer_analytics,
+        health_report=analysis.health_report,
         compliance_report=analysis.compliance_report,
         reconciliation_report=analysis.reconciliation_report,
-        narrative=narrative,
-        angel_report_bytes=angel_bytes,
-        vc_xlsx_bytes=vc_xlsx,
-        vc_pdf_bytes=vc_pdf,
-        workbench_xlsx_bytes=wb_xlsx,
-        workbench_pdf_bytes=wb_pdf,
+        narrative=analysis.narrative,
+        angel_report_bytes=reports.angel_pdf,
+        vc_xlsx_bytes=reports.vc_xlsx,
+        vc_pdf_bytes=reports.vc_pdf,
+        workbench_xlsx_bytes=reports.workbench_xlsx,
+        workbench_pdf_bytes=reports.workbench_pdf,
     )

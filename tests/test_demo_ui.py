@@ -195,3 +195,19 @@ class TestFourLensModes:
             assert label not in all_markdown
         assert "/ 100" not in all_markdown
         assert "Risk flags" in all_markdown or "risk flag" in all_markdown.lower()
+
+
+class TestAffiliateSelector:
+    """Regression for the pre-Phase-2 crash: selecting a counterparty under
+    "Mark as affiliates" raised ValidationError (Affiliate.relationship missing)."""
+
+    def test_selecting_an_affiliate_reruns_without_error(self) -> None:
+        at = AppTest.from_file(_APP_PATH, default_timeout=_TIMEOUT).run()
+        at = _generate_and_analyse(at, mode="🏛️ Workbench")
+        assert not at.exception
+        picker = at.multiselect(key="affiliate_multiselect")
+        assert picker.options, "expected counterparties to choose from"
+        picker.select(picker.options[0])
+        at.run()
+        assert not at.exception
+        assert len(at.tabs) == 9

@@ -20,12 +20,15 @@ Stage order and per-stage flags are identical to the pre-Phase-1 runner:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import tempfile
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from adapters.base import RawStatement
 from analysis.categoriser import CategorisationStats, Categoriser
@@ -40,13 +43,20 @@ from analysis.report_narrative import (
     severity_counts,
 )
 from analysis.risk import RiskAnalyst, RiskReport
-from config.logging import run_context, stage_timer
+from config.logging import run_context, safe_exc, stage_timer
 from config.settings import get_settings
 from jurisdictions.india import IndiaJurisdictionModule
 from pipeline.customer_identity import CustomerIdentityResolver
 from pipeline.normaliser import Normaliser
 from pipeline.related_party import Affiliate, RelatedPartyTagger
-from pipeline.validator import ValidationFailedError, ValidationReport, Validator
+from pipeline.validator import (
+    DQReport,
+    ValidationFailedError,
+    ValidationReport,
+    Validator,
+    build_dq_report,
+    parse_header_amount,
+)
 from schema.canonical import StatementDocument, ValidationStatus
 
 log = logging.getLogger(__name__)
@@ -67,6 +77,44 @@ class _Adapter(Protocol):
     def extract(self, path: str | Path) -> RawStatement: ...
 
 
+@dataclass(frozen=True)
+class StageEvent:
+    """One stage outcome, reported to ``AnalysisOptions.stage_observer``.
+
+    ``error`` is the exception *type* only (never its message, §1.9).
+    """
+
+    stage: str
+    status: str  # "succeeded" | "failed"
+    duration_ms: int
+    error: str | None = None
+
+
+StageObserver = Callable[[StageEvent], None]
+
+
+@contextlib.contextmanager
+def _stage(observer: StageObserver | None, stage: str, **counts: Any) -> Iterator[dict[str, Any]]:
+    """``stage_timer`` (unchanged logging) plus an optional observer callback.
+
+    The worker uses the observer to write ``stage_executions`` rows.
+    """
+    start = time.perf_counter()
+    try:
+        with stage_timer(stage, **counts) as ctx:
+            yield ctx
+    except BaseException as exc:
+        if observer is not None:
+            observer(StageEvent(stage, "failed", _elapsed_ms(start), safe_exc(exc)))
+        raise
+    if observer is not None:
+        observer(StageEvent(stage, "succeeded", _elapsed_ms(start)))
+
+
+def _elapsed_ms(start: float) -> int:
+    return int(round((time.perf_counter() - start) * 1000))
+
+
 @dataclass
 class AnalysisOptions:
     """Per-run knobs. ``None`` means "use config/settings.py"."""
@@ -83,6 +131,11 @@ class AnalysisOptions:
     embeddings_enabled: bool | None = None
     # Force an adapter (one of ADAPTERS). None → auto-select from filename/content.
     adapter: str | None = None
+    # Phase 2: called after every stage (the worker writes stage_executions from it).
+    stage_observer: StageObserver | None = None
+    # Phase 2: use this run_id instead of generating one (the worker creates the
+    # runs row first, so stage_executions can reference it while stages run).
+    run_id: str | None = None
 
 
 @dataclass
@@ -103,6 +156,8 @@ class AnalysisResult:
     adapter_name: str
     run_id: str
     stage_names: list[str] = field(default_factory=list)
+    # Phase 2 DQ report (informational; Validator.validate still gates).
+    dq_report: DQReport | None = None
 
 
 # ── Adapter selection ────────────────────────────────────────────────────────
@@ -185,7 +240,7 @@ def run_analysis(
     file_hash = hashlib.sha1(data).hexdigest()[:8]
     stages: list[str] = []
 
-    with run_context() as run_id:
+    with run_context(opts.run_id) as run_id:
         log.info("analysis start", extra={"input_hash": file_hash, "input_bytes": len(data)})
         # Adapters take a path, so the bytes go to a temp file (same naming as
         # the pre-Phase-1 runner). It is removed as soon as extraction is done.
@@ -195,69 +250,72 @@ def run_analysis(
             in_path = Path(tmp) / f"{file_hash}_{Path(filename).name}"
             in_path.write_bytes(data)
             adapter_name = opts.adapter or select_adapter_name(in_path)
-            with stage_timer("ingest", adapter=adapter_name) as ctx:
+            with _stage(opts.stage_observer, "ingest", adapter=adapter_name) as ctx:
                 raw = make_adapter(adapter_name).extract(in_path)
                 ctx["rows"] = len(raw.rows)
         stages.append("ingest")
 
-        with stage_timer("normalise") as ctx:
+        with _stage(opts.stage_observer, "normalise") as ctx:
             doc = Normaliser().normalise(raw)
             ctx["txns"] = len(doc.transactions)
         stages.append("normalise")
 
-        with stage_timer("validate") as ctx:
+        with _stage(opts.stage_observer, "validate") as ctx:
             validation_report = Validator().validate(doc)
             ctx["status"] = str(validation_report.status)
             ctx["issues"] = len(validation_report.issues)
+            dq_report = build_dq_report(
+                doc, opening_balance=parse_header_amount(raw.opening_balance_raw)
+            )
         stages.append("validate")
         if validation_report.status == ValidationStatus.FAILED:
-            raise ValidationFailedError(validation_report)
+            raise ValidationFailedError(validation_report, dq_report=dq_report, doc=doc)
 
-        with stage_timer("categorise") as ctx:
+        with _stage(opts.stage_observer, "categorise") as ctx:
             doc, cat_stats = Categoriser(llm_enabled=llm_enabled).categorise(doc)
             ctx["rule"] = cat_stats.rule_matched
             ctx["llm"] = cat_stats.llm_matched
             ctx["other"] = cat_stats.fallback_other
         stages.append("categorise")
 
-        with stage_timer("financial_analysis"):
+        with _stage(opts.stage_observer, "financial_analysis"):
             metrics = FinancialAnalyst().analyse(doc)
         stages.append("financial_analysis")
 
-        with stage_timer("related_party"):
+        with _stage(opts.stage_observer, "related_party"):
             doc = RelatedPartyTagger(llm_enabled=opts.related_party_llm).tag(
                 doc, opts.affiliates or []
             )
         stages.append("related_party")
 
-        with stage_timer("customer_identity"):
+        with _stage(opts.stage_observer, "customer_identity"):
             doc = CustomerIdentityResolver(embedding_enabled=embeddings).resolve(doc)
         stages.append("customer_identity")
 
-        with stage_timer("risk") as ctx:
+        with _stage(opts.stage_observer, "risk") as ctx:
             risk_report = RiskAnalyst(llm_enabled=llm_enabled).analyse(doc)
             ctx["flags"] = len(risk_report.flags)
         stages.append("risk")
 
-        with stage_timer("customer_analytics"):
+        with _stage(opts.stage_observer, "customer_analytics"):
             customer_analytics = CustomerAnalyticsAnalyst().analyse(doc)
         stages.append("customer_analytics")
 
-        with stage_timer("financial_health") as ctx:
+        with _stage(opts.stage_observer, "financial_health") as ctx:
             health_report = FinancialHealthAnalyst(llm_enabled=llm_enabled).analyse(
                 metrics, customer_analytics
             )
             ctx["alerts"] = len(health_report.alerts)
         stages.append("financial_health")
 
-        with stage_timer("compliance") as ctx:
+        with _stage(opts.stage_observer, "compliance") as ctx:
             compliance_report = ComplianceAnalyst(llm_enabled=llm_enabled).analyse(
                 doc, IndiaJurisdictionModule()
             )
             ctx["exceptions"] = len(compliance_report.exceptions)
         stages.append("compliance")
 
-        with stage_timer("reconciliation") as ctx:
+        with _stage(opts.stage_observer, "reconciliation") as ctx:
             reconciliation_report = ReconciliationAnalyst(llm_enabled=llm_enabled).analyse(
                 doc, opts.claims, customer_analytics, metrics
             )
@@ -265,7 +323,7 @@ def run_analysis(
         stages.append("reconciliation")
 
         cname = opts.company_name or f"Account {doc.account_id}"
-        with stage_timer("narrative"):
+        with _stage(opts.stage_observer, "narrative"):
             narrative = _narrative(
                 cname, metrics, risk_report, customer_analytics, health_report,
                 compliance_report, reconciliation_report, llm_enabled,
@@ -289,6 +347,7 @@ def run_analysis(
         adapter_name=adapter_name,
         run_id=run_id,
         stage_names=stages,
+        dq_report=dq_report,
     )
 
 

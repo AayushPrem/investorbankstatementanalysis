@@ -1,0 +1,48 @@
+# Local data platform: Postgres 16 + API + worker (ADR-0001, ADR-0002).
+#
+#   export BSAA_API_KEY_HASH=<sha256 hex of your key>   # see .env.example
+#   docker compose up --build
+#   curl localhost:8000/ready
+#
+# The credentials below are for a local throwaway database only.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bsaa
+      POSTGRES_PASSWORD: bsaa-local-only
+      POSTGRES_DB: bsaa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bsaa -d bsaa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: ["sh", "-c", "alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port 8000"]
+    environment: &app_env
+      DATABASE_URL: postgresql+psycopg2://bsaa:bsaa-local-only@postgres:5432/bsaa
+      API_KEY_HASH: ${BSAA_API_KEY_HASH:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      LOG_JSON: "true"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["python", "-m", "worker"]
+    environment: *app_env
+    depends_on:
+      api:
+        condition: service_started  # api runs the migration first
+    deploy:
+      replicas: 1
+
+volumes:
+  pgdata:

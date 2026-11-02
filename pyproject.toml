@@ -24,6 +24,8 @@ dependencies = [
 # Dependency audit (Phase 1, D9). Each decision is recorded in docs/CHANGELOG_UPGRADE.md.
 # Removed (no import anywhere): pymupdf, tabula-py, weasyprint, jinja2,
 # sqlalchemy, psycopg2-binary, networkx.
+# Phase 2 re-adds sqlalchemy + psycopg2-binary under the [platform] extra,
+# now that db/ imports them (docs/adr/0001-postgres-data-platform.md).
 
 [project.optional-dependencies]
 # Scanned-PDF / image OCR adapters (also needs the tesseract binary on PATH).
@@ -33,6 +35,17 @@ ocr = [
 # MiniLM customer-identity embeddings (CustomerIdentityResolver(embedding_enabled=True)).
 embeddings = [
     "sentence-transformers>=3.0",
+]
+# Data platform: Postgres system of record, job worker, FastAPI (Phase 2, ADR-0001/0002).
+# The analysis pipeline and the Streamlit demo don't need it.
+platform = [
+    "sqlalchemy>=2.1",  # Select[T1, T2] typing (api/routers/runs.py)
+    "alembic>=1.13",
+    "psycopg2-binary>=2.9",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
 ]
 dev = [
     "pytest>=8.2",
@@ -45,10 +58,11 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["schema*", "adapters*", "pipeline*", "analysis*", "jurisdictions*", "reports*", "profiles*", "tools*", "demo*", "scripts*", "config*", "llm*"]
+include = ["schema*", "adapters*", "pipeline*", "analysis*", "jurisdictions*", "reports*", "profiles*", "tools*", "demo*", "scripts*", "config*", "llm*", "db*", "api*", "worker*"]
 
 [tool.setuptools.package-data]
 config = ["thresholds.yaml"]
+db = ["migrations/script.py.mako"]
 
 [tool.ruff]
 line-length = 100
@@ -72,6 +86,9 @@ exclude = ["tests/", "demo/"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short"
+markers = [
+    "postgres: needs a real Postgres (BSAA_TEST_DATABASE_URL); skipped when unset",
+]
 filterwarnings = [
     # pipeline.orchestrator.Orchestrator is deprecated (Phase 1) but kept, with
     # its tests, until Phase 7. tests/test_run.py asserts that the warning fires.

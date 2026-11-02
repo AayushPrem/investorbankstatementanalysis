@@ -1,0 +1,12 @@
+.git
+.venv
+.vf
+**/__pycache__
+*.egg-info
+.env
+data/
+results/
+.pipeline_state/
+.cache/
+models/
+.claude/

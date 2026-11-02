@@ -10,6 +10,25 @@ jobs:
   ci:
     runs-on: ubuntu-latest
 
+    # Throwaway Postgres for the `postgres`-marked tests (tests/platform/test_pg_queue.py).
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bsaa
+          POSTGRES_PASSWORD: bsaa
+          POSTGRES_DB: bsaa_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bsaa -d bsaa_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      BSAA_TEST_DATABASE_URL: postgresql+psycopg2://bsaa:bsaa@localhost:5432/bsaa_test
+
     steps:
       - uses: actions/checkout@v4
 
@@ -31,7 +50,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -e ".[dev,ocr,embeddings]"
+          .venv/bin/python -m pip install -e ".[dev,ocr,embeddings,platform]"
 
       - name: Lint
         run: .venv/bin/python -m ruff check .
@@ -39,18 +58,22 @@ jobs:
       # Gated scope: must be clean. Widen as packages are fixed (see
       # docs/CHANGELOG_UPGRADE.md for the remaining scope).
       - name: Type check (gated)
-        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/
+        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/
 
       # Informational only — visible in logs, does not fail the build.
       - name: Type check (full scope, informational)
         continue-on-error: true
-        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ analysis/ adapters/ reports/ tools/ jurisdictions/
+        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ db/ api/ worker/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
       - name: Build synthetic gold set
         run: .venv/bin/python -m scripts.build_gold_set
 
       - name: Test
         run: .venv/bin/python -m pytest tests/ -q --ignore=tests/regression --tb=short
+
+      # Fail loudly if the Postgres tests were skipped (they must run in CI).
+      - name: Postgres tests (must not skip)
+        run: .venv/bin/python -m pytest tests/platform/test_pg_queue.py -q -rs --tb=short -p no:cacheprovider | tee pg.txt && ! grep -q "skipped" pg.txt
 
       - name: Regression (synthetic gold set)
         run: .venv/bin/python -m pytest tests/regression/ -q -rxX -s --tb=short
