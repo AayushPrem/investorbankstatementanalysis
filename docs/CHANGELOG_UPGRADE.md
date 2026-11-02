@@ -1072,7 +1072,13 @@ All units (5,835, 34 companies, base rate 0.381):
   - Reproduced with those exact versions in a temporary venv, then fixed with `np.asarray(..., dtype=float)`. Values are unchanged: the production model's test active PR-AUC recomputes to 0.556757, as recorded.
   - Gated mypy is clean under both version sets, and the Phase 6 tests pass in the CI-like venv (178 passed).
   - Lesson: the local gated mypy run doesn't stand in for CI's dependency resolution.
-  - The CI result for the fix is recorded in a follow-up docs commit.
+- **CI passed** in run 41505134327 on dc43e81 (Ubuntu, Python 3.11, Postgres 16). Every step was green:
+  - lint, gated mypy, informational mypy;
+  - gold-set build, small corpus and splits;
+  - CI categoriser, CI anomaly, and **CI churn + segmentation model training (v1-small)**;
+  - tests, Postgres tests (not skipped), regression.
+
+  Job logs need auth, so CI test counts were not read.
 - **Identity noise:**
   - Key splits make some "churn" a narration variant going quiet: label agreement 0.840, oracle base rate 0.075 against 0.186.
   - Two identity notions coexist: rule analytics use resolver ids, `churn_risk` uses narration keys (ADR-0006).
