@@ -857,7 +857,7 @@ This phase adds an unsupervised IsolationForest that flags transactions as unusu
 
 ### Not verified / known gaps
 
-- **CI result:** pending; added after the push.
+- **CI passed** in run 41483702499 on 7598042 (Ubuntu, Python 3.11, Postgres 16). Every step was green: lint, gated and informational mypy, gold-set build, small corpus + splits, CI categoriser training, **CI anomaly model training (v1-small)**, tests, Postgres tests (not skipped), regression. Job logs need auth, so CI test counts were not read.
 - **Severity bands aren't monotone on test.** MEDIUM is a 22-row slice with precision 0.136, below LOW at 0.160. Only HIGH separates clearly (0.350). HIGH is a validation fallback (0.999).
 - **Gain over the single-feature baseline is modest overall** (P@10 0.143 vs 0.133). It is large for first-time large counterparties and vendor amount outliers. The baseline is better on compliance rows and off-hours bursts.
 - **The pooled fallback is much weaker** (all-pooled P@10 0.077) and scored only 2 test companies. Real short statements would rely on it.
