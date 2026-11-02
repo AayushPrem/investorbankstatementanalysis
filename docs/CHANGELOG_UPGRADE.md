@@ -400,7 +400,7 @@ Branched from `new_improvements` at fddaf16. This phase adds a PostgreSQL system
 
 ### Not verified / known gaps
 
-- **Postgres-specific tests have not run** (`tests/platform/test_pg_queue.py`: migration on PG with `jsonb`/`ARRAY`/`numeric` types, `SKIP LOCKED` with 8 threads × 20 jobs and no double claims, locked-row skipping, end to end on PG). There's no Docker or Postgres on this machine. CI runs them against a `postgres:16` service, and a CI step fails the build if they skip. **Status: implemented, not run locally; pending CI.**
+- **Postgres-specific tests have not run locally** (`tests/platform/test_pg_queue.py`: migration on PG with `jsonb`/`ARRAY`/`numeric` types, `SKIP LOCKED` with 8 threads × 20 jobs and no double claims, locked-row skipping, end to end on PG). There's no Docker or Postgres on this machine. CI runs them against a `postgres:16` service, and a CI step fails the build if they skip. **Status: passed in CI run 41434153131 (commit 37dd801); not run locally.**
 - **`docker compose up` and `docker build` have not run** (no Docker here). The Dockerfile and compose file haven't been exercised.
 - **Postgres behaviour SQLite doesn't exercise:** SQLite ignores `FOR UPDATE SKIP LOCKED`, so on SQLite the no-double-claim guarantee is only checked logically (lease and ownership checks), not under real concurrency.
 - **Auth is a single shared API key**, with no per-tenant isolation: any valid key can read every run. This is enough for a demo; it isn't multi-tenant authorisation.
