@@ -17,13 +17,15 @@ python -m datasets.duckdb_stats data/corpus/v1 --bench
 | Corpus version | `v1` |
 | Generator version | `2.0.0` (`synthetic_gen.GENERATOR_VERSION`) |
 | Seed / companies / max months | 42 / 1,000 / 24 |
-| `corpus_hash` | `e086b173e6422d3e5c4d02ce27f543d653e50fc09d7445286f520efef8e5cf30` |
+| `corpus_hash` | `8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1` |
 | `splits_hash` | `a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe` |
-| Reproducibility | Two builds with 4 workers and one with 1 worker gave the same `corpus_hash`; two split runs gave the same `splits_hash`. |
-| Build time | 26.8 s with 4 workers, 67.0 s with 1 worker |
+| Reproducibility | Two builds gave the same `corpus_hash`, and so did two split runs. Before the newline fix (below), a 1-worker and a 4-worker build also gave the same hash; every Parquet and PDF file is unchanged by that fix. |
+| Build time | 24–27 s with 4 workers, 67.0 s with 1 worker |
 | Size on disk | features 28 MB, labels 15 MB, PDFs 2.3 MB |
 
 The hash is reproducible for a fixed pyarrow version (recorded in `manifest.json`), because a different pyarrow can write different Parquet bytes.
+
+All text files (truth JSON, manifests) are written with LF line endings on every OS, so line endings don't affect the hash. An earlier build wrote the truth JSON with platform newlines and gave `e086b173…f30` on Windows. Only the 30 truth files differ between the two builds. A Windows–Linux comparison of the full 1,000-company hash hasn't been run.
 
 ## Layout
 
@@ -179,7 +181,7 @@ From `python -m datasets.splits data/corpus/v1 --seed 42`:
 - Statement dates are synthetic and run past "today" (up to 2026-11-30).
 - The PDF subset has no time column, so `ml_off_hours_burst` can't be seen from PDFs.
 - Aggregated-revenue profiles (ecommerce, restaurant) have no customer-level churn.
-- Parquet bytes, and so `corpus_hash`, depend on the pyarrow version (recorded in the manifest).
+- Parquet bytes, and so `corpus_hash`, depend on the pyarrow version (recorded in the manifest). Cross-OS equality of the hash is expected (LF-only text, pure-Python RNG, reportlab invariant mode) but hasn't been verified.
 
 ## Storage benchmark (this machine)
 

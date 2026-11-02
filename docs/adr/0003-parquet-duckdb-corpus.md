@@ -28,4 +28,5 @@ Phases 4–6 train and evaluate models on a synthetic corpus: 1,000 companies, a
 ## Consequences
 
 - Hashes are reproducible for a given pyarrow version. A pyarrow upgrade can change the bytes, so `manifest.json` records `pyarrow_version`.
+- Text files in the corpus (truth JSON, manifests) are written with LF on every OS, so line endings don't change the hash.
 - `data/corpus/` is gitignored, and the corpus is rebuilt by `make corpus` (`make corpus-small` in CI).

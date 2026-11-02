@@ -486,9 +486,16 @@ A separate housekeeping commit on this branch updates the Phase 2 entry: the Pos
 
 - `results/sprint1/gold_regression.json` before vs after: **the only differing key is `/timestamp`**.
 - Default-path identity was re-checked after the last code edit (type-only): fingerprint and gold set identical again.
-- `tests/test_synthetic_gen_hooks.py` pins the truth-JSON hashes of 10 default-argument cases. They were produced by the **pre-change** generator (`git show 37dd801:tools/synthetic_gen.py`, swapped in temporarily) and match the hooked generator.
-- **Acceptance (same hash twice):** `python -m datasets.build_corpus --n-companies 1000 --seed 42`, run twice with 4 workers and once with 1 worker (to a scratch dir): `corpus_hash e086b173e6422d3e5c4d02ce27f543d653e50fc09d7445286f520efef8e5cf30` every time. The two in-place manifests are byte-identical. It was rebuilt twice more after the final edit with the same hash. 617,483 transactions, 23,233 customers, 1,710 flags, 30 PDFs; 26.8 s with 4 workers, 67.0 s with 1.
-- `python -m datasets.splits data/corpus/v1 --seed 42` run twice: `splits_hash a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe` both times.
+- `tests/test_synthetic_gen_hooks.py` pins the truth-JSON hashes of 10 default-argument cases, taken over **LF-normalised** bytes (see the CI fix below). Both the original and the re-pinned values were produced by the **pre-change** generator (`git show 37dd801:tools/synthetic_gen.py`, swapped in temporarily) and match the hooked generator.
+- **Acceptance (same hash twice), final code (2515990):** `python -m datasets.build_corpus --n-companies 1000 --seed 42` run twice gave `corpus_hash 8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1` both times, with byte-identical manifests. That's 617,483 transactions, 23,233 customers, 1,710 flags and 30 PDFs, built in 24–25 s with 4 workers.
+  - Before the newline fix the hash was `e086b173…f30`. It matched across three builds, including a 1-worker build that took 67.0 s.
+  - The two builds differ only in the 30 truth JSON files (CRLF → LF); every Parquet and PDF file is identical, and the row counts are unchanged.
+- `python -m datasets.splits data/corpus/v1 --seed 42` gave `splits_hash a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe` on two runs before the fix and two after.
+- **CI fix (2515990):**
+  - **Failure:** CI run 41442150062 on bc42c68 failed in the Test step. The job log needs auth (HTTP 403 without `gh`), so the failing test names weren't read.
+  - **Cause, confirmed locally:** `_build_truth` uses `Path.write_text`, which writes CRLF on Windows and LF on Linux, so the Windows-computed truth-JSON pins can't match on Linux. The clean ICICI e-commerce case hashes to `c8024c88…` raw and `de42a89c…` after CRLF → LF.
+  - **Fix:** the test now hashes LF-normalised bytes. The corpus stores truth JSON with LF, and both manifests are written with LF, so `corpus_hash` no longer depends on line endings. The generator's default output is unchanged.
+  - **Re-run after the fix:** Phase 3 + generator tests 68 passed; `ruff` clean; gated mypy clean (46 files).
 - **Label isolation:** `tests/test_corpus.py` asserts that:
   - feature ∩ label columns ⊆ {txn_id, company_id, bank}
   - no feature column name contains a label token
@@ -512,7 +519,8 @@ A separate housekeeping commit on this branch updates the Phase 2 entry: the Pos
 
 ### Not verified / known gaps
 
-- **CI has not run this branch yet** (pushed at the end of the session). The `--small` CI step and the `[ml]` install on Linux are "implemented, not run" until it does. The hash is only claimed for this machine's pyarrow 26.0.0; Linux with the same pyarrow is expected to match but wasn't checked.
+- **CI passed** in run 41444209874 on 2515990 (Ubuntu, Python 3.11). Every step was green: lint, gated and informational mypy, gold-set build, small corpus + splits build, tests, Postgres tests, regression. The first run (41442150062, bc42c68) failed on the CRLF pins described above.
+- **Cross-OS hash equality isn't verified.** CI builds only the `--small` corpus, and its hash wasn't compared with a Windows build of the same arguments. The 1,000-company hash is claimed for this machine (pyarrow 26.0.0) only.
 - **Class balance is skewed by the profiles:** REVENUE 55.2%, and **LOAN_OUT has 0 rows**. Phase 4 can't evaluate LOAN_OUT.
 - **6.9% of rows are inline narrations that aren't diversified:** restaurant Swiggy/Zomato UPI, legacy cash/FX/self-transfer injectors.
 - **`ml_first_time_large_counterparty` lands in 143 of the 174 companies selected; `ml_vendor_amount_outlier` in 132 of 140.** In the rest, the guard can't be met in 10 tries.
