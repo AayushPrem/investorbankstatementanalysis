@@ -185,8 +185,8 @@ def build_splits(corpus_dir: Path, seed: int = 42, quiet: bool = False) -> dict[
         "files": files,
         "splits_hash": combined_hash(files),
     }
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n",
-                                       encoding="utf-8")
+    (out / "manifest.json").write_bytes(   # LF on every OS
+        (json.dumps(manifest, indent=2, sort_keys=True, default=str) + "\n").encode("utf-8"))
     if not quiet:
         print(json.dumps({k: manifest[k] for k in ("churn_thresholds", "sizes", "splits_hash")},
                          indent=1, default=str))

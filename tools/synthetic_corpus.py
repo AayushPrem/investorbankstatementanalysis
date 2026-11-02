@@ -976,6 +976,9 @@ def generate_company(
                     truth = truth_dir / f"{spec.company_id}.truth.json"
                     sg._build_truth(spec.company_id, spec.bank, spec.profile, company, txns,
                                     injected, company.opening_balance, truth)
+                    # _build_truth uses write_text (platform newlines); store LF so the
+                    # corpus bytes, and corpus_hash, are the same on every OS.
+                    truth.write_bytes(truth.read_bytes().replace(b"\r\n", b"\n"))
                     result.truth_path = truth
             finally:
                 rl_config.invariant = saved_inv

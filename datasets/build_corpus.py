@@ -274,8 +274,9 @@ def build(
         "files": file_hashes,
         "corpus_hash": combined_hash(file_hashes),
     }
-    (stage / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                                         encoding="utf-8")
+    # write_bytes, not write_text: LF on every OS so the manifest is byte-identical.
+    (stage / "manifest.json").write_bytes(
+        (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     _replace_dir(stage, out_dir)
     if not quiet:
         total = time.perf_counter() - t0
