@@ -18,7 +18,7 @@ EPS = 1e-6
 
 def signed_log1p(x: np.ndarray) -> np.ndarray:
     """sign(x) * log1p(|x|). Module-level so the sklearn pipeline pickles."""
-    return np.sign(x) * np.log1p(np.abs(x))
+    return np.asarray(np.sign(x) * np.log1p(np.abs(x)), dtype=float)
 
 
 def make_estimator(cand: dict[str, Any], seed: int) -> Any:

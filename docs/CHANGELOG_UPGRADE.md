@@ -1067,7 +1067,12 @@ All units (5,835, 34 companies, base rate 0.381):
 
 ### Not verified / known gaps
 
-- **CI** hasn't run on this branch yet. The result will be recorded in a follow-up docs commit.
+- **CI, first run (41501636352 on ae8a51f): failed at "Type check (gated)".**
+  - Cause: CI's Python 3.11 resolves mypy 1.20.2 and numpy 2.4.6, while this machine has mypy 2.4.1 and numpy 2.5.4. The older stubs flag `ml/churn/model.py::signed_log1p` returning Any.
+  - Reproduced with those exact versions in a temporary venv, then fixed with `np.asarray(..., dtype=float)`. Values are unchanged: the production model's test active PR-AUC recomputes to 0.556757, as recorded.
+  - Gated mypy is clean under both version sets, and the Phase 6 tests pass in the CI-like venv (178 passed).
+  - Lesson: the local gated mypy run doesn't stand in for CI's dependency resolution.
+  - The CI result for the fix is recorded in a follow-up docs commit.
 - **Identity noise:**
   - Key splits make some "churn" a narration variant going quiet: label agreement 0.840, oracle base rate 0.075 against 0.186.
   - Two identity notions coexist: rule analytics use resolver ids, `churn_risk` uses narration keys (ADR-0006).
