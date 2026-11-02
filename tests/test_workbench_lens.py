@@ -14,7 +14,6 @@ from decimal import Decimal
 from io import BytesIO
 
 import pdfplumber
-import pytest
 from openpyxl import load_workbook
 
 from analysis.compliance import ComplianceReport

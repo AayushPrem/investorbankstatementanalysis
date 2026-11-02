@@ -25,7 +25,7 @@ from analysis.risk import Severity
 from jurisdictions import ComplianceException
 
 if TYPE_CHECKING:
-    from schema.canonical import StatementDocument, TransactionCategory
+    from schema.canonical import StatementDocument
 
 _ZERO = Decimal("0")
 _LAKH = Decimal("100000")
@@ -95,8 +95,7 @@ class CashTransactionLimit269ST:
     )
     _threshold: Decimal = field(default=_269ST_CASH_LIMIT, init=False, repr=False)
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
-        from schema.canonical import TransactionCategory
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
 
         cash_credits = [
             t for t in document.transactions
@@ -153,7 +152,7 @@ class GSTPaymentConsistency:
     )
     _threshold_revenue: Decimal = field(default=_GST_ANNUAL_TURNOVER_GATE, init=False, repr=False)
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
         from schema.canonical import TransactionCategory
 
         total_revenue = sum(
@@ -219,7 +218,7 @@ class TDSDisbursementPattern:
     )
     _min_annual_salary: Decimal = field(default=_TDS_ANNUAL_SALARY_GATE, init=False, repr=False)
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
         from schema.canonical import TransactionCategory
 
         total_salary = sum(
@@ -277,7 +276,7 @@ class PMLAHighValueCash:
     )
     _stir_threshold: Decimal = field(default=_CTR_CASH_WINDOW_THRESHOLD, init=False, repr=False)
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
         cash_txns = sorted(
             [t for t in document.transactions if _CASH_DESC_RE.search(t.description)],
             key=lambda t: t.date,
@@ -341,7 +340,7 @@ class RelatedPartyConcentration:
     )
     _concentration_threshold: float = _RPT_CONCENTRATION_THRESHOLD
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
         related_debits = sum(
             t.debit for t in document.transactions
             if t.is_related_party and t.debit
@@ -389,7 +388,7 @@ class RelatedPartyConcentration:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
-class CashLoanProhibition269SS_269T:
+class CashLoanProhibition269SS_269T:  # noqa: N801 -- mirrors statute section names
     rule_id: str = "IND_269SS_269T"
     name: str = "Cash Loan / Deposit Prohibition (§269SS, §269T)"
     regulatory_citation: str = "Income Tax Act, 1961 §269SS, §269T"
@@ -401,7 +400,7 @@ class CashLoanProhibition269SS_269T:
     )
     _threshold: Decimal = field(default=_269SS_T_CASH_LOAN_LIMIT, init=False, repr=False)
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
         from schema.canonical import TransactionCategory
 
         exceptions: list[ComplianceException] = []

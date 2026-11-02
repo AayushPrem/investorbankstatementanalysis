@@ -14,25 +14,28 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from io import BytesIO
-from typing import Optional
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-
 from reportlab.lib import colors as rl_colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    HRFlowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    HRFlowable,
+    PageBreak,
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
 )
 
 from analysis.compliance import ComplianceReport
 from analysis.customer_analytics import CustomerAnalyticsReport, aggregator_caveat_text
-from analysis.financial_health_alerts import classify_nrr
 from analysis.financial_analyst import FinancialMetrics
+from analysis.financial_health_alerts import classify_nrr
 from analysis.reconciliation import ReconciliationReport
 from analysis.risk import RiskReport, Severity
 from schema.canonical import StatementDocument
@@ -129,7 +132,7 @@ def _sev_fill(severity: str | Severity) -> PatternFill:
 def _sheet_summary(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
     ws = wb.active
     ws.title = "Executive Summary"
-    m, rr, ca = r.metrics, r.risk_report, r.customer_analytics
+    m, rr = r.metrics, r.risk_report
 
     ws.merge_cells("A1:F1")
     ws["A1"] = f"WORKBENCH ANALYSIS — {r.company_name or 'Company'}"
@@ -345,7 +348,7 @@ def _sheet_transactions(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
     for i, t in enumerate(r.doc.transactions, 2):
         flags_str = "; ".join(t.anomaly_flags) if t.anomaly_flags else ""
         rp = t.related_party_match or ("Yes" if t.is_related_party else "")
-        fill = _RED if t.is_related_party else ((_AMBER if t.anomaly_flags else None))
+        fill = _RED if t.is_related_party else (_AMBER if t.anomaly_flags else None)
         _data_row(ws, [str(t.date), t.description[:80],
                        float(t.debit) if t.debit else "", float(t.credit) if t.credit else "",
                        float(t.balance), str(t.category or ""), t.customer_id or "",

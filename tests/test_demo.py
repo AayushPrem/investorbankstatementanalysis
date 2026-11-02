@@ -13,7 +13,6 @@ import pytest
 
 from demo.pipeline_runner import DemoResult, run_pipeline_on_bytes
 
-
 # ─── fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")

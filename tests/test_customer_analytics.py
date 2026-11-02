@@ -9,16 +9,8 @@ import pytest
 from analysis.customer_analytics import (
     CustomerAnalyticsAnalyst,
     CustomerAnalyticsReport,
-    ChurnEvent,
-    ConcentrationPoint,
-    RegularityAlert,
     _add_months,
     _linear_slope,
-    _detect_churn,
-    _compute_nrr,
-    _compute_cohort_retention,
-    _compute_concentration,
-    _detect_regularity_alerts,
     aggregator_caveat_text,
 )
 from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT

@@ -26,6 +26,7 @@ import logging
 import math
 import re
 from pathlib import Path
+from typing import Any, cast
 
 from pipeline.related_party import _clean_name as _strip_noise
 from schema.canonical import StatementDocument, TransactionCategory
@@ -135,7 +136,7 @@ class CustomerIdentityResolver:
             self._embedding_enabled = True
         elif embedding_enabled:
             try:
-                from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+                from sentence_transformers import SentenceTransformer
                 self._model = SentenceTransformer("all-MiniLM-L6-v2")
                 self._embedding_enabled = True
                 log.debug("CustomerIdentityResolver: embedding model loaded")
@@ -246,7 +247,7 @@ class CustomerIdentityResolver:
         missing = [n for n in names if n not in cache]
 
         if missing and self._model is not None:
-            vecs = self._model.encode(missing, show_progress_bar=False)  # type: ignore[union-attr]
+            vecs = cast(Any, self._model).encode(missing, show_progress_bar=False)
             for name, vec in zip(missing, vecs):
                 # numpy arrays have .tolist(); plain lists do not
                 cache[name] = vec.tolist() if hasattr(vec, "tolist") else list(vec)
@@ -262,7 +263,7 @@ class CustomerIdentityResolver:
 def _load_embedding_cache() -> dict[str, list[float]]:
     if _CACHE_PATH.exists():
         try:
-            return json.loads(_CACHE_PATH.read_text(encoding="utf-8"))
+            return cast("dict[str, list[float]]", json.loads(_CACHE_PATH.read_text(encoding="utf-8")))
         except Exception:
             return {}
     return {}

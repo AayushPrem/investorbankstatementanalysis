@@ -1,11 +1,11 @@
 from jurisdictions.india.rules import (
     INDIA_RULES,
+    CashLoanProhibition269SS_269T,
     CashTransactionLimit269ST,
     GSTPaymentConsistency,
-    TDSDisbursementPattern,
     PMLAHighValueCash,
     RelatedPartyConcentration,
-    CashLoanProhibition269SS_269T,
+    TDSDisbursementPattern,
 )
 
 

@@ -53,7 +53,7 @@ class ComplianceAnalyst:
 
     def analyse(
         self,
-        document: "StatementDocument",
+        document: StatementDocument,
         rules: list | object,
         jurisdiction: str | None = None,
     ) -> ComplianceReport:

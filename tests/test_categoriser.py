@@ -13,14 +13,14 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from adapters import DigitalPDFAdapter
 from analysis.categoriser import (
-    Categoriser,
     CategorisationStats,
+    Categoriser,
     _build_user_message,
     _parse_llm_response,
     _rule_classify,
@@ -262,7 +262,7 @@ class TestAccuracy:
         self, doc_txns: list[CanonicalTransaction], truth_txns: list[dict[str, Any]]
     ) -> tuple[int, int]:
         """Match extracted txns to truth by (date, amount). Return (correct, matched)."""
-        from decimal import Decimal as D
+        from decimal import Decimal as D  # noqa: N817
         correct = matched = 0
         used: set[int] = set()
 

@@ -4,18 +4,16 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
-import pytest
-
 from analysis.compliance import ComplianceAnalyst, ComplianceReport
 from analysis.risk import Severity
 from jurisdictions.india.rules import (
     INDIA_RULES,
-    CashTransactionLimit269ST,
     CashLoanProhibition269SS_269T,
+    CashTransactionLimit269ST,
     GSTPaymentConsistency,
-    TDSDisbursementPattern,
     PMLAHighValueCash,
     RelatedPartyConcentration,
+    TDSDisbursementPattern,
 )
 from schema.canonical import (
     CanonicalTransaction,

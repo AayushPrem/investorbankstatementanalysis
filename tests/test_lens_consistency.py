@@ -22,9 +22,13 @@ import pytest
 from openpyxl import load_workbook
 
 from analysis.compliance import ComplianceReport
-from analysis.customer_analytics import ChurnEvent, ConcentrationPoint, CustomerAnalyticsReport
+from analysis.customer_analytics import ConcentrationPoint, CustomerAnalyticsReport
 from analysis.financial_analyst import FinancialMetrics, MonthlyStats
-from analysis.financial_health_alerts import FinancialHealthAnalyst, classify_concentration, classify_nrr
+from analysis.financial_health_alerts import (
+    FinancialHealthAnalyst,
+    classify_concentration,
+    classify_nrr,
+)
 from analysis.reconciliation import ReconciliationReport
 from analysis.risk import RiskReport
 from reports.angel_lens import AngelLensReport

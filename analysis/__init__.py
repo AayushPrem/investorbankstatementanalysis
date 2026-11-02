@@ -1,7 +1,5 @@
-from analysis.categoriser import Categoriser, CategorisationStats
+from analysis.categoriser import CategorisationStats, Categoriser
 from analysis.compliance import ComplianceAnalyst, ComplianceReport
-from analysis.reconciliation import CompanyClaims, ReconciliationAnalyst, ReconciliationReport, ReconciliationFinding
-from analysis.financial_health_alerts import FinancialHealthAnalyst, FinancialHealthReport, HealthAlert
 from analysis.customer_analytics import (
     ChurnEvent,
     ConcentrationPoint,
@@ -10,6 +8,17 @@ from analysis.customer_analytics import (
     RegularityAlert,
 )
 from analysis.financial_analyst import FinancialAnalyst, FinancialMetrics, MonthlyStats
+from analysis.financial_health_alerts import (
+    FinancialHealthAnalyst,
+    FinancialHealthReport,
+    HealthAlert,
+)
+from analysis.reconciliation import (
+    CompanyClaims,
+    ReconciliationAnalyst,
+    ReconciliationFinding,
+    ReconciliationReport,
+)
 from analysis.risk import (
     Flag,
     RiskAnalyst,

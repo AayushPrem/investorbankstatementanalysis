@@ -5,12 +5,16 @@ Covers all four analysis modes: Angel, VC, Workbench, Network.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from streamlit.testing.v1 import AppTest
 
 from tools.synthetic_gen import generate_statement
 
-_APP_PATH = "demo/app.py"
+# Absolute path: AppTest.from_file resolves relative paths against the calling
+# test file's directory (tests/), not the repo root.
+_APP_PATH = str(Path(__file__).resolve().parents[1] / "demo" / "app.py")
 _TIMEOUT = 120
 
 

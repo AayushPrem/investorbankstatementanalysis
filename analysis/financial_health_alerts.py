@@ -15,7 +15,6 @@ import logging
 import os
 from dataclasses import dataclass, field
 from decimal import Decimal
-from enum import StrEnum
 from typing import Any
 
 from analysis.customer_analytics import CustomerAnalyticsReport
@@ -244,8 +243,8 @@ def _detect_revenue_trend(m: FinancialMetrics) -> list[tuple]:
     if consecutive_declines == 2:
         return [("revenue_decline", Severity.MEDIUM, "Revenue trend",
                  "2 months declining",
-                 f"Revenue has fallen in each of the last 2 months. While not yet a confirmed trend, "
-                 f"two consecutive declines warrant investigation into churn, pipeline, or seasonality.",
+                 "Revenue has fallen in each of the last 2 months. While not yet a confirmed trend, "
+                 "two consecutive declines warrant investigation into churn, pipeline, or seasonality.",
                  {"consecutive_decline_months": 2})]
 
     # Check for stagnation: all months within ±2% growth
@@ -550,4 +549,4 @@ class FinancialHealthAnalyst:
             lines.append(f"- Latest active customers: {latest}")
         if ca.churn_events:
             lines.append(f"- Churn events in period: {len(ca.churn_events)}")
-        return "\n".join(l for l in lines if l)
+        return "\n".join(line for line in lines if line)

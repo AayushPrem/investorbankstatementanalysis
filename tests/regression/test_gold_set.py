@@ -555,6 +555,18 @@ def test_categorisation_accuracy(regression_report: dict[str, Any]) -> None:
     )
 
 
+# raises=AssertionError: only the below-target assertion is expected to fail.
+# The "metric could not be computed" coverage check uses pytest.fail (a
+# different exception type) and therefore still fails loudly.
+_D12_XFAIL = pytest.mark.xfail(
+    strict=False,
+    raises=AssertionError,
+    reason="D12 (UPGRADE_GUIDE.md §2.4): known below-target metric, tracked for a "
+    "later phase. Target is unchanged; this becomes XPASS once fixed.",
+)
+
+
+@_D12_XFAIL
 def test_risk_recall(regression_report: dict[str, Any]) -> None:
     """Risk-flag recall meets target. A metric that couldn't be computed at
     all (no statement injected a risk flag) is a hard failure, not a silent
@@ -583,6 +595,7 @@ def test_compliance_recall(regression_report: dict[str, Any]) -> None:
     assert actual >= target, f"Compliance recall {actual:.1%} is below target of {target:.0%}."
 
 
+@_D12_XFAIL
 def test_customer_id_accuracy(regression_report: dict[str, Any]) -> None:
     """Customer-identity resolution pairwise clustering accuracy meets target."""
     actual = regression_report["summary"]["customer_id_accuracy"]

@@ -16,7 +16,6 @@ from pipeline.related_party import (
 )
 from schema.canonical import CanonicalTransaction, SourceReference, StatementDocument
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────────────────────

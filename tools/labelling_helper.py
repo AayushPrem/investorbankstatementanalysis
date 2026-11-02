@@ -292,7 +292,7 @@ def main() -> None:
         sys.exit(1)
 
     print(f"\n{'='*60}")
-    print(f"  BSAA Labelling Helper")
+    print("  BSAA Labelling Helper")
     print(f"  Statement: {args.pdf.name}")
     print(f"  ID: {args.statement_id}")
     print(f"{'='*60}")
@@ -338,10 +338,10 @@ def main() -> None:
         data["_labelling_notes"] = notes
         output_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
-    print(f"\nNext steps:")
+    print("\nNext steps:")
     print(f"  1. Open {output_path} and review/correct any errors")
     print(f"  2. Copy the PDF to data/gold/{args.statement_id}.pdf")
-    print(f"  3. Run: make regression  (once Step 1.4 is built)")
+    print("  3. Run: make regression  (once Step 1.4 is built)")
 
 
 if __name__ == "__main__":

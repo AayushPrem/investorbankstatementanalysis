@@ -35,7 +35,7 @@ class ValidationFailedError(Exception):
     rather than continuing to categorisation/analysis/reports.
     """
 
-    def __init__(self, report: "ValidationReport") -> None:
+    def __init__(self, report: ValidationReport) -> None:
         self.report = report
         issue_lines = [
             f"[{i.severity}] {i.code}"

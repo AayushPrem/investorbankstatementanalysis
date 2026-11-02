@@ -21,14 +21,14 @@ import pdfplumber
 import pytest
 
 from analysis.customer_analytics import (
+    ConcentrationPoint,
     CustomerAnalyticsAnalyst,
     CustomerAnalyticsReport,
-    ConcentrationPoint,
 )
 from analysis.financial_analyst import FinancialMetrics, MonthlyStats
-from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
 from analysis.financial_health_alerts import FinancialHealthAnalyst
 from analysis.risk import Flag, RiskReport, Severity
+from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
 from reports.angel_lens import (
     AngelLensReport,
     _fmt_amount,

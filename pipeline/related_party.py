@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -197,7 +198,7 @@ class RelatedPartyTagger:
         Returns list of (matched_name | None, confidence).
         """
         try:
-            import anthropic  # type: ignore[import-untyped]
+            import anthropic
         except ImportError:
             log.warning("anthropic package not installed — skipping LLM fuzzy match")
             return [(None, 0.0)] * len(pairs)
@@ -225,7 +226,10 @@ class RelatedPartyTagger:
                 ),
                 messages=[{"role": "user", "content": user_msg}],
             )
-            raw = json.loads(response.content[0].text.strip())
+            # cast is type-only (no runtime effect): a non-text first block
+            # still raises AttributeError here, caught by the except below.
+            first_block = cast("anthropic.types.TextBlock", response.content[0])
+            raw = json.loads(first_block.text.strip())
             if not isinstance(raw, list) or len(raw) != len(pairs):
                 raise ValueError("Unexpected response shape")
             return [
@@ -267,7 +271,7 @@ _SKIP_ENTITY = re.compile(
 
 
 def extract_counterparties(
-    doc: "StatementDocument",
+    doc: StatementDocument,
 ) -> list[tuple[str, int, float]]:
     """Extract unique counterparty names from transaction narrations.
 
@@ -280,7 +284,7 @@ def extract_counterparties(
     from collections import defaultdict
     from decimal import Decimal
 
-    agg: dict[str, dict] = defaultdict(lambda: {"count": 0, "amount": Decimal("0")})
+    agg: dict[str, dict[str, Any]] = defaultdict(lambda: {"count": 0, "amount": Decimal("0")})
 
     for txn in doc.transactions:
         raw = txn.description

@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
+from io import BytesIO
 
 import pdfplumber
-import pytest
 from openpyxl import load_workbook
-from io import BytesIO
 
 from analysis.customer_analytics import (
     ChurnEvent,

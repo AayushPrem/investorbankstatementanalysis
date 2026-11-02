@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -1596,12 +1595,12 @@ def generate_statement(
     bank: str,
     profile: str,
     output_dir: Path,
-    statement_id: Optional[str] = None,
-    flags: Optional[list[str]] = None,
+    statement_id: str | None = None,
+    flags: list[str] | None = None,
     risk_mode: str = "manual",   # "manual" | "realistic" | "clean"
     n_months: int = 3,
-    start: Optional[date] = None,
-    seed: Optional[int] = None,
+    start: date | None = None,
+    seed: int | None = None,
 ) -> tuple[Path, Path]:
     """Generate one synthetic bank statement PDF + paired ground truth JSON.
 
@@ -1654,11 +1653,11 @@ def generate_statement(
 def generate_statement_to_bytes(
     bank: str,
     profile: str,
-    flags: Optional[list[str]] = None,
+    flags: list[str] | None = None,
     risk_mode: str = "realistic",
     n_months: int = 6,
-    start: Optional[date] = None,
-    seed: Optional[int] = None,
+    start: date | None = None,
+    seed: int | None = None,
 ) -> tuple[bytes, str, list[str]]:
     """Generate a statement in memory and return (pdf_bytes, company_name, injected_flag_names).
 

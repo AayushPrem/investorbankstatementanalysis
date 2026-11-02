@@ -16,7 +16,6 @@ from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-
 from reportlab.lib import colors as rl_colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -34,7 +33,11 @@ from reportlab.platypus import (
 
 from analysis.customer_analytics import CustomerAnalyticsReport, aggregator_caveat_text
 from analysis.financial_analyst import FinancialMetrics
-from analysis.financial_health_alerts import classify_burn_ratio, classify_concentration, classify_nrr
+from analysis.financial_health_alerts import (
+    classify_burn_ratio,
+    classify_concentration,
+    classify_nrr,
+)
 from analysis.risk import RiskReport, Severity
 from schema.canonical import StatementDocument
 
@@ -364,7 +367,7 @@ def _sheet2_financial_health(wb: Workbook, result: AnalysisResult) -> None:
             elif growth_val >= 0:
                 signal = "Stable — positive but below 5% growth threshold"
             else:
-                signal = f"Declining — investigate root cause (churn vs acquisition)"
+                signal = "Declining — investigate root cause (churn vs acquisition)"
             ws.cell(row=i, column=6, value=signal).font = _hfont(
                 color=_GREEN_F if growth_val > 0.05 else (_AMBER_F if growth_val >= 0 else _RED_F),
                 size=9)
@@ -962,8 +965,6 @@ def _build_pdf(result: AnalysisResult) -> bytes:
     story.append(Spacer(1, 6))
 
     # 5-KPI grid
-    active_counts = list(ca.monthly_active_customers.values())
-    latest_active = active_counts[-1] if active_counts else "—"
     latest_nrr = nrr_vals[-1] if nrr_vals else None
 
     kpi_labels = [

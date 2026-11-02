@@ -11,9 +11,9 @@ import pytest
 from pipeline.customer_identity import (
     ANOMALY_FLAG_AGGREGATOR_SETTLEMENT,
     CustomerIdentityResolver,
-    _UnionFind,
     _cosine_sim,
     _customer_id,
+    _UnionFind,
     clean_counterparty,
     matched_aggregator,
 )
@@ -23,7 +23,6 @@ from schema.canonical import (
     StatementDocument,
     TransactionCategory,
 )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers

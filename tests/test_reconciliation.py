@@ -4,10 +4,11 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
-import pytest
-
-from analysis.customer_analytics import CustomerAnalyticsAnalyst, CustomerAnalyticsReport, ChurnEvent
-from analysis.financial_analyst import FinancialAnalyst, FinancialMetrics, MonthlyStats
+from analysis.customer_analytics import (
+    ChurnEvent,
+    CustomerAnalyticsReport,
+)
+from analysis.financial_analyst import FinancialMetrics
 from analysis.reconciliation import (
     CompanyClaims,
     MismatchDirection,
@@ -148,8 +149,6 @@ class TestNeverLostCustomer:
         ]
         claims = CompanyClaims(declared_never_lost_customer=True)
         report = ReconciliationAnalyst(llm_enabled=False).analyse(_doc(), claims, ca, _metrics())
-        findings = [f for f in report.findings if "Never" in f.check_name or "never" in f.check_name.lower() or "Customer" in f.check_name and "Lost" in f.check_name]
-        never_lost = [f for f in report.findings if "never" in f.check_name.lower() or "Never Lost" in f.check_name]
         # Either naming convention
         all_checks = [f.check_name for f in report.findings]
         assert any("Customer" in c for c in all_checks)

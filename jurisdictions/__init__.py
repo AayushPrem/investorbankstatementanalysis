@@ -29,7 +29,7 @@ class ComplianceRule(Protocol):
     severity: Severity
     description: str
 
-    def evaluate(self, document: "StatementDocument") -> list[ComplianceException]:
+    def evaluate(self, document: StatementDocument) -> list[ComplianceException]:
         ...
 
 

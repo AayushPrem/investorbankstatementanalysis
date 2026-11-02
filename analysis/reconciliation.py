@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
@@ -94,7 +94,7 @@ def _pct(actual: Decimal, claimed: Decimal) -> float:
 
 def _check_revenue(
     claims: CompanyClaims,
-    metrics: "FinancialMetrics",
+    metrics: FinancialMetrics,
 ) -> ReconciliationFinding | None:
     if claims.declared_revenue_total is None:
         return None
@@ -153,7 +153,7 @@ def _check_revenue(
 
 def _check_customer_count(
     claims: CompanyClaims,
-    customer_analytics: "CustomerAnalyticsReport",
+    customer_analytics: CustomerAnalyticsReport,
 ) -> ReconciliationFinding | None:
     if claims.declared_customer_count is None:
         return None
@@ -191,7 +191,7 @@ def _check_customer_count(
 
 def _check_nrr(
     claims: CompanyClaims,
-    customer_analytics: "CustomerAnalyticsReport",
+    customer_analytics: CustomerAnalyticsReport,
 ) -> ReconciliationFinding | None:
     if claims.declared_nrr is None or not customer_analytics.nrr_per_month:
         return None
@@ -225,7 +225,7 @@ def _check_nrr(
 
 def _check_never_lost_customer(
     claims: CompanyClaims,
-    customer_analytics: "CustomerAnalyticsReport",
+    customer_analytics: CustomerAnalyticsReport,
 ) -> ReconciliationFinding | None:
     if not claims.declared_never_lost_customer:
         return None
@@ -253,8 +253,8 @@ def _check_never_lost_customer(
 
 def _check_salary_headcount(
     claims: CompanyClaims,
-    document: "StatementDocument",
-    metrics: "FinancialMetrics",
+    document: StatementDocument,
+    metrics: FinancialMetrics,
 ) -> ReconciliationFinding | None:
     if claims.declared_headcount is None or claims.declared_avg_monthly_salary is None:
         return None
@@ -336,10 +336,10 @@ class ReconciliationAnalyst:
 
     def analyse(
         self,
-        document: "StatementDocument",
+        document: StatementDocument,
         claims: CompanyClaims | None,
-        customer_analytics: "CustomerAnalyticsReport",
-        metrics: "FinancialMetrics",
+        customer_analytics: CustomerAnalyticsReport,
+        metrics: FinancialMetrics,
     ) -> ReconciliationReport:
         if claims is None:
             return ReconciliationReport(findings=[], claims_provided=False)
@@ -361,7 +361,7 @@ class ReconciliationAnalyst:
     def _polish_investor_framing(
         self,
         findings: list[ReconciliationFinding],
-        metrics: "FinancialMetrics",
+        metrics: FinancialMetrics,
     ) -> None:
         try:
             import anthropic

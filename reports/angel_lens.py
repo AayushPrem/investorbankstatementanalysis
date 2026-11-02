@@ -43,8 +43,13 @@ from reportlab.platypus import (
 )
 
 from analysis.customer_analytics import aggregator_caveat_text
-from analysis.financial_analyst import FinancialMetrics, MonthlyStats
-from analysis.financial_health_alerts import classify_churn, classify_concentration, classify_nrr, classify_runway
+from analysis.financial_analyst import FinancialMetrics
+from analysis.financial_health_alerts import (
+    classify_churn,
+    classify_concentration,
+    classify_nrr,
+    classify_runway,
+)
 from schema.canonical import StatementDocument
 
 log = logging.getLogger(__name__)
@@ -416,11 +421,11 @@ class AngelLensReport:
             Paragraph("High", head_style), Paragraph("Medium", head_style),
             Paragraph("Low", head_style),
         ]]
-        for label, total, h, m, l in rows:
+        for label, total, h, m, low in rows:
             data.append([
                 Paragraph(label, label_style), Paragraph(str(total), val_style),
                 Paragraph(str(h), val_style), Paragraph(str(m), val_style),
-                Paragraph(str(l), val_style),
+                Paragraph(str(low), val_style),
             ])
 
         tbl = Table(data, colWidths=[
