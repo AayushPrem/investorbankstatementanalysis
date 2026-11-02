@@ -22,15 +22,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
+          # No restore-keys: a pyproject.toml change must build a fresh venv,
+          # otherwise packages removed from the dependency list would linger in
+          # the cached venv and mask a missing dependency.
           key: venv-${{ runner.os }}-py3.11-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            venv-${{ runner.os }}-py3.11-
 
       - name: Install dependencies
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -e ".[dev]"
+          .venv/bin/python -m pip install -e ".[dev,ocr,embeddings]"
 
       - name: Lint
         run: .venv/bin/python -m ruff check .
@@ -38,12 +39,12 @@ jobs:
       # Gated scope: must be clean. Widen as packages are fixed (see
       # docs/CHANGELOG_UPGRADE.md for the remaining scope).
       - name: Type check (gated)
-        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/
+        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/
 
       # Informational only — visible in logs, does not fail the build.
       - name: Type check (full scope, informational)
         continue-on-error: true
-        run: .venv/bin/python -m mypy schema/ pipeline/ analysis/ adapters/ reports/ tools/ jurisdictions/
+        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
       - name: Build synthetic gold set
         run: .venv/bin/python -m scripts.build_gold_set

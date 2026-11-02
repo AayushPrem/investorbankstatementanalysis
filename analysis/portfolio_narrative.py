@@ -10,13 +10,16 @@ analysis.risk.RiskAnalyst._generate_narrative.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
+
+from config.logging import safe_exc
+from config.settings import llm_key_configured
+from config.thresholds import get_thresholds
+from llm.client import get_llm_client
 
 log = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
-_HIGH_RISK_THRESHOLD = 50.0
+_HIGH_RISK_THRESHOLD = get_thresholds().portfolio.high_risk_score  # config/thresholds.yaml
 
 
 @dataclass
@@ -38,19 +41,17 @@ def generate_portfolio_narrative(
     if not companies:
         return "No companies in this cohort."
 
-    llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
+    llm_enabled = llm_enabled and llm_key_configured()
     if llm_enabled:
         try:
             return _llm_narrative(companies)
         except Exception as exc:  # noqa: BLE001 — always fall back, never break the report
-            log.warning("Portfolio narrative LLM call failed (%s) — using fallback", exc)
+            log.warning("Portfolio narrative LLM call failed (%s) — using fallback", safe_exc(exc))
 
     return _fallback_narrative(companies)
 
 
 def _llm_narrative(companies: list[PortfolioCompany]) -> str:
-    import anthropic
-
     lines = []
     for c in companies:
         flags = "; ".join(c.red_flag_descriptions[:5]) or "none"
@@ -63,9 +64,12 @@ def _llm_narrative(companies: list[PortfolioCompany]) -> str:
         )
     company_block = "\n".join(lines)
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=_MODEL,
+    response_text = get_llm_client().complete(
+        (
+            f"Portfolio of {len(companies)} companies, one line each "
+            f"(risk score, flags, compliance status, runway, churn):\n\n{company_block}\n\n"
+            "Write the portfolio-level narrative."
+        ),
         max_tokens=500,
         system=(
             "You are a VC portfolio analyst briefing an investment committee on a "
@@ -74,16 +78,8 @@ def _llm_narrative(companies: list[PortfolioCompany]) -> str:
             "of greatest concern (name them), any compliance issues worth flagging, "
             "and one concrete recommendation. Be specific and quantify where possible."
         ),
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Portfolio of {len(companies)} companies, one line each "
-                f"(risk score, flags, compliance status, runway, churn):\n\n{company_block}\n\n"
-                "Write the portfolio-level narrative."
-            ),
-        }],
     )
-    text: str = response.content[0].text.strip()
+    text: str = response_text.strip()
     return text
 
 

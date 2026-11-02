@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from analysis.risk import Severity
+from config.logging import safe_exc
+from config.settings import llm_key_configured
 from jurisdictions import ComplianceException
+from llm.client import LLMUnavailable, get_llm_client
 
 if TYPE_CHECKING:
     from schema.canonical import StatementDocument
@@ -49,7 +51,7 @@ class ComplianceAnalyst:
     """Runs a jurisdiction's compliance rules and optionally polishes descriptions via LLM."""
 
     def __init__(self, llm_enabled: bool = True) -> None:
-        self._llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
+        self._llm_enabled = llm_enabled and llm_key_configured()
 
     def analyse(
         self,
@@ -71,7 +73,7 @@ class ComplianceAnalyst:
                 exceptions = rule.evaluate(document)
                 all_exceptions.extend(exceptions)
             except Exception as exc:
-                log.warning("Rule %s failed: %s", getattr(rule, "rule_id", "?"), exc)
+                log.warning("Rule %s failed: %s", getattr(rule, "rule_id", "?"), safe_exc(exc))
 
         # Sort: HIGH first
         all_exceptions.sort(key=lambda e: {"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(str(e.severity), 9))
@@ -82,11 +84,6 @@ class ComplianceAnalyst:
         return ComplianceReport(exceptions=all_exceptions, jurisdiction=jurisdiction)
 
     def _polish_investor_framing(self, exceptions: list[ComplianceException]) -> None:
-        try:
-            import anthropic
-        except ImportError:
-            return
-
         items = [
             {
                 "index": i,
@@ -105,17 +102,17 @@ class ComplianceAnalyst:
             f"Exceptions:\n{json.dumps(items, indent=2)}"
         )
         try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1500,
+            text = get_llm_client().complete(
+                prompt,
                 system="You are a legal and compliance expert. Respond only with valid JSON.",
-                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1500,
             )
-            raw = json.loads(response.content[0].text.strip())
+            raw = json.loads(text.strip())
             framing_map = {item["index"]: item["framing"] for item in raw}
             for i, exc in enumerate(exceptions):
                 if i in framing_map:
                     exc.investor_risk_framing = framing_map[i]
+        except LLMUnavailable:
+            return
         except Exception as err:
-            log.warning("LLM polish for compliance failed: %s", err)
+            log.warning("LLM polish for compliance failed: %s", safe_exc(err))

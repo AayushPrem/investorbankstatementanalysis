@@ -14,15 +14,15 @@ PY := $(VENV_BIN)/python
 
 # Packages gated by mypy in CI (must be clean). Widen as errors are fixed;
 # see docs/CHANGELOG_UPGRADE.md for the current remaining scope.
-TYPECHECK_GATED := schema/ pipeline/
-TYPECHECK_ALL   := schema/ pipeline/ analysis/ adapters/ reports/ tools/ jurisdictions/
+TYPECHECK_GATED := schema/ pipeline/ config/ llm/
+TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
 .PHONY: install gold test lint typecheck typecheck-all regression all demo
 
 install:
 	$(BOOTSTRAP_PY) -m venv $(VENV)
 	$(PY) -m pip install --upgrade pip
-	$(PY) -m pip install -e ".[dev]"
+	$(PY) -m pip install -e ".[dev,ocr,embeddings]"
 
 gold:
 	$(PY) -m scripts.build_gold_set

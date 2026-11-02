@@ -15,13 +15,16 @@ and optionally generates a plain-English narrative via Claude Haiku.
 from __future__ import annotations
 
 import logging
-import os
 import statistics
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+from config.logging import safe_exc
+from config.settings import llm_key_configured
+from config.thresholds import get_thresholds
+from llm.client import LLMUnavailable, get_llm_client
 from schema.canonical import StatementDocument, TransactionCategory
 
 log = logging.getLogger(__name__)
@@ -29,32 +32,36 @@ log = logging.getLogger(__name__)
 _ZERO = Decimal("0")
 _THOUSAND = Decimal("1000")
 
+# Thresholds live in config/thresholds.yaml (section "risk"). The module-level
+# names are kept as aliases so detectors, other modules and tests are unchanged.
+_TH = get_thresholds().risk
+
 # ── Structuring thresholds (§269ST) ──────────────────────────────────────────
-_STRUCT_LOWER = Decimal("150000")   # ₹1.5 lakh
-_STRUCT_UPPER = Decimal("200000")   # ₹2 lakh
-_STRUCT_WINDOW_DAYS = 7
-_STRUCT_MIN_COUNT = 4
+_STRUCT_LOWER = _TH.structuring_lower            # ₹1.5 lakh
+_STRUCT_UPPER = _TH.structuring_upper            # ₹2 lakh
+_STRUCT_WINDOW_DAYS = _TH.structuring_window_days
+_STRUCT_MIN_COUNT = _TH.structuring_min_count
 
 # ── Round-trip parameters ─────────────────────────────────────────────────────
-_RT_MIN_DAYS = 3
-_RT_MAX_DAYS = 14
-_RT_AMOUNT_TOL = Decimal("0.05")  # 5% tolerance
+_RT_MIN_DAYS = _TH.round_trip_min_days
+_RT_MAX_DAYS = _TH.round_trip_max_days
+_RT_AMOUNT_TOL = _TH.round_trip_amount_tol       # 5% tolerance
 
 # ── Spike / drain ─────────────────────────────────────────────────────────────
-_SPIKE_Z = 2.5
-_SPIKE_Z_HIGH = 3.5
+_SPIKE_Z = _TH.spike_z
+_SPIKE_Z_HIGH = _TH.spike_z_high
 
 # ── Customer concentration ─────────────────────────────────────────────────────
-_CONC_HIGH = Decimal("0.80")
-_CONC_MEDIUM = Decimal("0.60")
+_CONC_HIGH = _TH.concentration_high
+_CONC_MEDIUM = _TH.concentration_medium
 
 # ── Round amount clustering ───────────────────────────────────────────────────
-_ROUND_THRESHOLD = 0.30
-_ROUND_HIGH_THRESHOLD = 0.60
+_ROUND_THRESHOLD = _TH.round_amount_threshold
+_ROUND_HIGH_THRESHOLD = _TH.round_amount_high_threshold
 
 # ── Founder extraction ────────────────────────────────────────────────────────
-_FOUNDER_MONTHLY_LIMIT = Decimal("500000")   # ₹5 lakh with no declared salary
-_FOUNDER_SALARY_MULTIPLE = Decimal("3")
+_FOUNDER_MONTHLY_LIMIT = _TH.founder_monthly_limit   # ₹5 lakh with no declared salary
+_FOUNDER_SALARY_MULTIPLE = _TH.founder_salary_multiple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -451,9 +458,7 @@ def detect_founder_over_extraction(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _SEVERITY_WEIGHTS: dict[Severity, float] = {
-    Severity.HIGH:   10.0,
-    Severity.MEDIUM:  5.0,
-    Severity.LOW:     2.0,
+    Severity(name): weight for name, weight in _TH.severity_weights.items()
 }
 
 
@@ -471,8 +476,8 @@ class RiskAnalyst:
     """Runs all six detectors and produces a RiskReport with composite score."""
 
     def __init__(self, llm_enabled: bool = True) -> None:
-        self._llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
-        if llm_enabled and not os.getenv("ANTHROPIC_API_KEY"):
+        self._llm_enabled = llm_enabled and llm_key_configured()
+        if llm_enabled and not self._llm_enabled:
             log.warning(
                 "ANTHROPIC_API_KEY not set — RiskAnalyst narrative will use fallback text"
             )
@@ -507,19 +512,18 @@ class RiskAnalyst:
             )
         if not self._llm_enabled:
             return _fallback_narrative(flags)
-        try:
-            import anthropic
-        except ImportError:
-            return _fallback_narrative(flags)
 
         try:
             flag_lines = "\n".join(
                 f"- [{f.severity}] {f.detector_name}: {f.description}"
                 for f in flags
             )
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+            response_text = get_llm_client().complete(
+                (
+                    "Summarise these risk flags from an automated bank statement "
+                    f"analysis:\n\n{flag_lines}\n\n"
+                    "Write a 3-5 sentence investor-facing risk narrative."
+                ),
                 max_tokens=400,
                 system=(
                     "You are a financial risk analyst summarising findings for an "
@@ -527,18 +531,12 @@ class RiskAnalyst:
                     "Be specific about the risk, not just the detector name. "
                     "Quantify where possible. Be professional and concise."
                 ),
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        "Summarise these risk flags from an automated bank statement "
-                        f"analysis:\n\n{flag_lines}\n\n"
-                        "Write a 3-5 sentence investor-facing risk narrative."
-                    ),
-                }],
             )
-            return response.content[0].text.strip()
+            return response_text.strip()
+        except LLMUnavailable:
+            return _fallback_narrative(flags)
         except Exception as exc:
-            log.warning("Narrative generation failed (%s) — using fallback", exc)
+            log.warning("Narrative generation failed (%s) — using fallback", safe_exc(exc))
             return _fallback_narrative(flags)
 
 

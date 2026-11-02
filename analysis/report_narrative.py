@@ -16,12 +16,14 @@ it does not render investment verdicts`).
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field
+
+from config.logging import safe_exc
+from config.settings import llm_key_configured
+from llm.client import get_llm_client
 
 log = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
 
 _SYSTEM_PROMPT = (
     "You are a due-diligence analyst summarising an automated bank-statement "
@@ -70,12 +72,12 @@ def severity_counts(items: list, severity_attr: str = "severity") -> dict[str, i
 
 def generate_report_narrative(data: ReportNarrativeInput, llm_enabled: bool = True) -> str:
     """Produce the Summary paragraph for one company's report."""
-    llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
+    llm_enabled = llm_enabled and llm_key_configured()
     if llm_enabled:
         try:
             return _llm_narrative(data)
         except Exception as exc:  # noqa: BLE001 — always fall back, never break the report
-            log.warning("Report narrative LLM call failed (%s) — using fallback", exc)
+            log.warning("Report narrative LLM call failed (%s) — using fallback", safe_exc(exc))
 
     return _fallback_narrative(data)
 
@@ -89,8 +91,6 @@ def _fmt_inr(v: float) -> str:
 
 
 def _llm_narrative(data: ReportNarrativeInput) -> str:
-    import anthropic
-
     facts = {
         "company": data.company_name,
         "total_revenue": _fmt_inr(data.total_revenue),
@@ -107,17 +107,12 @@ def _llm_narrative(data: ReportNarrativeInput) -> str:
         "reconciliation_findings": data.reconciliation_finding_counts,
     }
 
-    client = anthropic.Anthropic()
-    response = client.messages.create(
-        model=_MODEL,
-        max_tokens=400,
+    response_text = get_llm_client().complete(
+        f"Analysis facts for {data.company_name}:\n\n{facts}\n\nWrite the summary paragraph.",
         system=_SYSTEM_PROMPT,
-        messages=[{
-            "role": "user",
-            "content": f"Analysis facts for {data.company_name}:\n\n{facts}\n\nWrite the summary paragraph.",
-        }],
+        max_tokens=400,
     )
-    text: str = response.content[0].text.strip()
+    text: str = response_text.strip()
     return text
 
 

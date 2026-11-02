@@ -1,7 +1,13 @@
 """Batch processing — run the full pipeline over many statements concurrently
 (Sprint 4, Step 4.3).
 
-Each input's full run_pipeline_on_bytes() call is CPU-bound (PDF parsing) and
+Each input runs through the canonical pipeline, pipeline.run.run_analysis. By
+default that goes via demo.pipeline_runner.run_pipeline_on_bytes, which also
+renders the report lenses the Network UI downloads, and the outcome is a
+DemoResult. With BatchOrchestrator(render_reports=False), run_analysis is
+called directly and the outcome is a pipeline.run.AnalysisResult.
+
+Each input's pipeline call is CPU-bound (PDF parsing) and
 makes blocking LLM HTTP calls, so real concurrency comes from running each
 one in a worker thread (asyncio.to_thread) under a semaphore — not from
 making the pipeline itself async. A failure on one statement is captured,
@@ -23,6 +29,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from config.logging import redact, safe_exc
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +70,15 @@ class BatchResult:
         return {path: r for path, r in self.results.items() if isinstance(r, Exception)}
 
 
-def _default_pipeline_fn() -> PipelineFn:
+def _analysis_only(data: bytes, filename: str, company_name: str | None = None) -> Any:
+    from pipeline.run import AnalysisOptions, run_analysis  # heavy import, deferred
+
+    return run_analysis(data, filename, options=AnalysisOptions(company_name=company_name))
+
+
+def _default_pipeline_fn(render_reports: bool = True) -> PipelineFn:
+    if not render_reports:
+        return _analysis_only
     from demo.pipeline_runner import run_pipeline_on_bytes  # heavy import, deferred
 
     return run_pipeline_on_bytes
@@ -71,10 +87,11 @@ def _default_pipeline_fn() -> PipelineFn:
 class BatchOrchestrator:
     """Runs the full per-company pipeline over many inputs with bounded concurrency."""
 
-    def __init__(self, concurrency: int = 4) -> None:
+    def __init__(self, concurrency: int = 4, render_reports: bool = True) -> None:
         if concurrency < 1:
             raise ValueError(f"concurrency must be >= 1, got {concurrency}")
         self.concurrency = concurrency
+        self.render_reports = render_reports
 
     async def run_batch_async(
         self,
@@ -82,7 +99,7 @@ class BatchOrchestrator:
         progress_callback: ProgressCallback | None = None,
         pipeline_fn: PipelineFn | None = None,
     ) -> BatchResult:
-        fn = pipeline_fn or _default_pipeline_fn()
+        fn = pipeline_fn or _default_pipeline_fn(self.render_reports)
         semaphore = asyncio.Semaphore(self.concurrency)
         results: dict[str, Any] = {}
 
@@ -95,7 +112,9 @@ class BatchOrchestrator:
                         company_name=item.resolved_company_name(),
                     )
                 except Exception as exc:  # noqa: BLE001 — isolate failures per-input by design
-                    log.warning("batch item failed: %s (%s)", item.path, exc)
+                    log.warning(
+                        "batch item failed: file=%s (%s)", redact(item.path), safe_exc(exc)
+                    )
                     outcome = exc
                 results[item.path] = outcome
                 if progress_callback is not None:

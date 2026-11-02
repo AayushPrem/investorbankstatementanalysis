@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from dataclasses import dataclass
 
+from config.logging import safe_exc
+from config.settings import get_settings
+from config.thresholds import get_thresholds
+from llm.client import LLMClient, LLMUnavailable, get_llm_client
 from schema.canonical import CanonicalTransaction, StatementDocument, TransactionCategory
 
 log = logging.getLogger(__name__)
@@ -187,20 +190,21 @@ class CategorisationStats:
 class Categoriser:
     """Assigns TransactionCategory to every transaction in a StatementDocument."""
 
-    LLM_MODEL = "claude-haiku-4-5-20251001"
-    BATCH_SIZE = 50
+    BATCH_SIZE = get_thresholds().categoriser.llm_batch_size  # config/thresholds.yaml
 
     def __init__(
         self,
         llm_enabled: bool = True,
-        llm_model: str = LLM_MODEL,
+        llm_model: str | None = None,
         batch_size: int = BATCH_SIZE,
     ) -> None:
-        self._llm_model = llm_model
+        settings = get_settings()
+        # None → the configured model (config/settings.py, env LLM_MODEL)
+        self._llm_model = llm_model or settings.llm_model
         self._batch_size = batch_size
         # Disable LLM if the caller requests it or if no API key is configured
-        self._llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
-        if llm_enabled and not os.getenv("ANTHROPIC_API_KEY"):
+        self._llm_enabled = llm_enabled and settings.llm_available
+        if llm_enabled and not settings.llm_available:
             log.warning("ANTHROPIC_API_KEY not set — Categoriser running in rule-only mode")
 
     def categorise(self, doc: StatementDocument) -> tuple[StatementDocument, CategorisationStats]:
@@ -224,7 +228,10 @@ class Categoriser:
                 try:
                     llm_cats = self._llm_categorise_batch(unmatched)
                 except Exception as exc:
-                    log.warning("LLM batch failed (%s) — assigning OTHER to %d transactions", exc, len(unmatched))
+                    log.warning(
+                        "LLM batch failed (%s) — assigning OTHER to %d transactions",
+                        safe_exc(exc), len(unmatched),
+                    )
                     llm_cats = [TransactionCategory.OTHER] * len(unmatched)
                 for txn, cat in zip(unmatched, llm_cats):
                     txn.category = cat
@@ -248,13 +255,7 @@ class Categoriser:
     def _llm_categorise_batch(
         self, txns: list[CanonicalTransaction]
     ) -> list[TransactionCategory]:
-        try:
-            import anthropic  # type: ignore[import-untyped]
-        except ImportError:
-            log.warning("anthropic package not installed — falling back to OTHER")
-            return [TransactionCategory.OTHER] * len(txns)
-
-        client = anthropic.Anthropic()
+        client = get_llm_client(enabled=True, model=self._llm_model)
         results: list[TransactionCategory] = []
 
         for i in range(0, len(txns), self._batch_size):
@@ -264,17 +265,16 @@ class Categoriser:
         return results
 
     def _llm_call(
-        self, client: object, txns: list[CanonicalTransaction]
+        self, client: LLMClient, txns: list[CanonicalTransaction]
     ) -> list[TransactionCategory]:
         try:
-            response = client.messages.create(  # type: ignore[union-attr]
-                model=self._llm_model,
-                max_tokens=256,
-                system=_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": _build_user_message(txns)}],
+            text = client.complete(
+                _build_user_message(txns), system=_SYSTEM_PROMPT, max_tokens=256,
             )
-            text = response.content[0].text
             return _parse_llm_response(text, len(txns))
+        except LLMUnavailable:
+            log.warning("LLM unavailable — falling back to OTHER for batch")
+            return [TransactionCategory.OTHER] * len(txns)
         except Exception as exc:
-            log.warning("LLM call failed (%s) — falling back to OTHER for batch", exc)
+            log.warning("LLM call failed (%s) — falling back to OTHER for batch", safe_exc(exc))
             return [TransactionCategory.OTHER] * len(txns)

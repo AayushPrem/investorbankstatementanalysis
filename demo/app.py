@@ -30,6 +30,7 @@ import streamlit as st
 
 from analysis.reconciliation import CompanyClaims
 from analysis.risk import Severity
+from config.logging import configure_logging
 from demo.pipeline_runner import DemoResult, run_pipeline_on_bytes
 from pipeline.batch import BatchInput, BatchOrchestrator
 from pipeline.related_party import Affiliate, extract_counterparties
@@ -41,6 +42,9 @@ from reports.network_lens import (
     build_portfolio_narrative,
 )
 from schema.canonical import StatementDocument
+
+# JSON logs with run_id/stage (config/logging.py). Idempotent across Streamlit reruns.
+configure_logging()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config

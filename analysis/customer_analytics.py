@@ -12,19 +12,21 @@ import statistics
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from config.thresholds import get_thresholds
 from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
 from schema.canonical import StatementDocument, TransactionCategory
 
 log = logging.getLogger(__name__)
 
 _ZERO = Decimal("0")
-_CHURN_SILENCE_MONTHS = 3
-_MIN_MONTHS_FOR_REGULARITY = 6
-_REGULARITY_GAP_MULTIPLE = 2.0
+_TH = get_thresholds().customer_analytics  # config/thresholds.yaml
+_CHURN_SILENCE_MONTHS = _TH.churn_silence_months
+_MIN_MONTHS_FOR_REGULARITY = _TH.min_months_for_regularity
+_REGULARITY_GAP_MULTIPLE = _TH.regularity_gap_multiple
 # Matches the "material" threshold used elsewhere in this codebase for
 # round-amount clustering (analysis/risk.py) — below this, aggregator revenue
 # is treated as a normal minority payment channel, not a blind spot.
-_AGGREGATOR_DOMINANCE_THRESHOLD = 0.30
+_AGGREGATOR_DOMINANCE_THRESHOLD = _TH.aggregator_dominance_threshold
 
 
 # ---------------------------------------------------------------------------

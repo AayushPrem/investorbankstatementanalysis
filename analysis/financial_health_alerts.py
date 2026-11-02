@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -20,6 +19,10 @@ from typing import Any
 from analysis.customer_analytics import CustomerAnalyticsReport
 from analysis.financial_analyst import FinancialMetrics
 from analysis.risk import _CONC_HIGH, _CONC_MEDIUM, Severity
+from config.logging import safe_exc
+from config.settings import llm_key_configured
+from config.thresholds import get_thresholds
+from llm.client import LLMUnavailable, get_llm_client
 
 log = logging.getLogger(__name__)
 
@@ -43,19 +46,23 @@ _ZERO = Decimal("0")
 # import direction doesn't create a cycle.
 # ─────────────────────────────────────────────────────────────────────────────
 
-RUNWAY_CRITICAL_MONTHS = Decimal("2")
-RUNWAY_LOW_MONTHS = Decimal("4")
-RUNWAY_HEALTHY_MONTHS = Decimal("6")
+# Values come from config/thresholds.yaml (section "health"). The public names
+# stay because every report lens imports them.
+_TH = get_thresholds().health
 
-BURN_EXTREME_RATIO = 3.0
-BURN_HIGH_RATIO = 1.5
+RUNWAY_CRITICAL_MONTHS = _TH.runway_critical_months
+RUNWAY_LOW_MONTHS = _TH.runway_low_months
+RUNWAY_HEALTHY_MONTHS = _TH.runway_healthy_months
 
-NRR_SEVERE_PCT = 0.70
-NRR_CONTRACTION_PCT = 0.85
-NRR_PAR_PCT = 1.00
+BURN_EXTREME_RATIO = _TH.burn_extreme_ratio
+BURN_HIGH_RATIO = _TH.burn_high_ratio
 
-CHURN_HIGH_PCT = 0.30
-CHURN_ELEVATED_PCT = 0.15
+NRR_SEVERE_PCT = _TH.nrr_severe_pct
+NRR_CONTRACTION_PCT = _TH.nrr_contraction_pct
+NRR_PAR_PCT = _TH.nrr_par_pct
+
+CHURN_HIGH_PCT = _TH.churn_high_pct
+CHURN_ELEVATED_PCT = _TH.churn_elevated_pct
 
 # Concentration is measured on TOP-3 customer revenue share (not top-1) —
 # matches analysis/risk.py's customer_concentration detector, the actual
@@ -230,7 +237,7 @@ def _detect_revenue_trend(m: FinancialMetrics) -> list[tuple]:
         else:
             break
 
-    if consecutive_declines >= 3:
+    if consecutive_declines >= _TH.sustained_decline_months:
         avg_decline = float(sum(rates[-3:]) / 3 * 100)
         return [("sustained_revenue_decline", Severity.HIGH, "Revenue trend",
                  f"{consecutive_declines} months declining",
@@ -250,7 +257,7 @@ def _detect_revenue_trend(m: FinancialMetrics) -> list[tuple]:
     # Check for stagnation: all months within ±2% growth
     if len(rates) >= 3:
         recent = rates[-3:]
-        if all(abs(r) < Decimal("0.02") for r in recent):
+        if all(abs(r) < _TH.stagnation_band for r in recent):
             return [("revenue_stagnation", Severity.LOW, "Revenue trend",
                      "Flat 3+ months",
                      f"Revenue has been essentially flat for the last {len(recent)} months (all MoM changes < 2%). "
@@ -272,7 +279,8 @@ def _detect_burn_acceleration(m: FinancialMetrics) -> list[tuple]:
     burn_growth = (burns[-1] - burns[-3]) / burns[-3] if burns[-3] else 0
     rev_growth  = (revs[-1]  - revs[-3])  / revs[-3]  if revs[-3]  else 0
 
-    if burn_growth > 0.20 and burn_growth > rev_growth + 0.15:
+    if (burn_growth > _TH.burn_acceleration_min_growth
+            and burn_growth > rev_growth + _TH.burn_acceleration_margin):
         return [("accelerating_burn", Severity.MEDIUM, "Burn acceleration",
                  f"+{burn_growth*100:.0f}% over 3 months",
                  f"Operating costs have grown {burn_growth*100:.0f}% over the last 3 months while "
@@ -426,13 +434,7 @@ def _polish_descriptions(
     metrics_context: str,
 ) -> list[str]:
     """Call Claude Haiku once with all alerts; returns polished descriptions."""
-    try:
-        import anthropic
-    except ImportError:
-        return [a[4] for a in alerts]
-
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
+    if not llm_key_configured():
         return [a[4] for a in alerts]
 
     items = [
@@ -452,21 +454,21 @@ def _polish_descriptions(
     )
 
     try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1000,
+        text = get_llm_client().complete(
+            prompt,
             system=(
                 "You are a financial analyst writing investor-facing due diligence alerts. "
                 "Respond only with valid JSON — no extra text."
             ),
-            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1000,
         )
-        raw = json.loads(response.content[0].text.strip())
+        raw = json.loads(text.strip())
         desc_map = {item["index"]: item["description"] for item in raw}
         return [desc_map.get(i, alerts[i][4]) for i in range(len(alerts))]
+    except LLMUnavailable:
+        return [a[4] for a in alerts]
     except Exception as exc:
-        log.warning("LLM description polishing failed (%s) — using rule-based text", exc)
+        log.warning("LLM description polishing failed (%s) — using rule-based text", safe_exc(exc))
         return [a[4] for a in alerts]
 
 
@@ -478,8 +480,8 @@ class FinancialHealthAnalyst:
     """Runs all financial health detectors and returns a FinancialHealthReport."""
 
     def __init__(self, llm_enabled: bool = True) -> None:
-        self._llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
-        if llm_enabled and not os.getenv("ANTHROPIC_API_KEY"):
+        self._llm_enabled = llm_enabled and llm_key_configured()
+        if llm_enabled and not self._llm_enabled:
             log.info("ANTHROPIC_API_KEY not set — FinancialHealthAnalyst using rule-based descriptions")
 
     def analyse(

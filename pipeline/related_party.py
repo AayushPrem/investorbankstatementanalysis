@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-from typing import Any, cast
+from typing import Any
 
 from pydantic import BaseModel, Field
 
+from config.logging import safe_exc
+from config.settings import llm_key_configured
+from config.thresholds import get_thresholds
+from llm.client import LLMUnavailable, get_llm_client
 from schema.canonical import StatementDocument
 
 log = logging.getLogger(__name__)
@@ -99,16 +102,16 @@ def _affiliate_cleaned_names(aff: Affiliate) -> set[str]:
 # Tagger
 # ─────────────────────────────────────────────────────────────────────────────
 
-_LLM_CONFIDENCE_THRESHOLD = 0.8
-_LLM_BATCH_SIZE = 30
+_LLM_CONFIDENCE_THRESHOLD = get_thresholds().related_party.llm_confidence_threshold
+_LLM_BATCH_SIZE = get_thresholds().related_party.llm_batch_size
 
 
 class RelatedPartyTagger:
     """Tags transactions with is_related_party, related_party_match, counterparty."""
 
     def __init__(self, llm_enabled: bool = True) -> None:
-        self._llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
-        if llm_enabled and not os.getenv("ANTHROPIC_API_KEY"):
+        self._llm_enabled = llm_enabled and llm_key_configured()
+        if llm_enabled and not self._llm_enabled:
             log.warning(
                 "ANTHROPIC_API_KEY not set — RelatedPartyTagger using exact-match only"
             )
@@ -164,7 +167,7 @@ class RelatedPartyTagger:
                 try:
                     results = self._llm_call(pairs, aff_names)
                 except Exception as exc:
-                    log.warning("LLM batch call raised unexpectedly (%s) — skipping batch", exc)
+                    log.warning("LLM batch call raised unexpectedly (%s) — skipping batch", safe_exc(exc))
                     continue
 
                 for idx, (matched_name, confidence) in zip(chunk, results):
@@ -197,12 +200,6 @@ class RelatedPartyTagger:
 
         Returns list of (matched_name | None, confidence).
         """
-        try:
-            import anthropic
-        except ImportError:
-            log.warning("anthropic package not installed — skipping LLM fuzzy match")
-            return [(None, 0.0)] * len(pairs)
-
         lines = "\n".join(f"{i+1}. {desc}" for i, (desc, _) in enumerate(pairs))
         user_msg = (
             f"Known affiliates: {json.dumps(aff_names)}\n\n"
@@ -215,29 +212,27 @@ class RelatedPartyTagger:
         )
 
         try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
+            text = get_llm_client().complete(
+                user_msg,
                 max_tokens=512,
                 system=(
                     "You are a financial analyst. Determine if bank transaction "
                     "descriptions match known affiliate entities. "
                     "Respond only with valid JSON — no explanation."
                 ),
-                messages=[{"role": "user", "content": user_msg}],
             )
-            # cast is type-only (no runtime effect): a non-text first block
-            # still raises AttributeError here, caught by the except below.
-            first_block = cast("anthropic.types.TextBlock", response.content[0])
-            raw = json.loads(first_block.text.strip())
+            raw = json.loads(text.strip())
             if not isinstance(raw, list) or len(raw) != len(pairs):
                 raise ValueError("Unexpected response shape")
             return [
                 (item.get("match") or None, float(item.get("confidence", 0)))
                 for item in raw
             ]
+        except LLMUnavailable:
+            log.warning("LLM unavailable — skipping LLM fuzzy match")
+            return [(None, 0.0)] * len(pairs)
         except Exception as exc:
-            log.warning("LLM fuzzy match failed (%s) — falling back to no-match", exc)
+            log.warning("LLM fuzzy match failed (%s) — falling back to no-match", safe_exc(exc))
             return [(None, 0.0)] * len(pairs)
 
 

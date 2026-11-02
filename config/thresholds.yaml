@@ -1,0 +1,87 @@
+# Detector, alert and compliance thresholds.
+#
+# Loaded by config/thresholds.py into frozen dataclasses. Every value here was
+# a hardcoded module constant (or inline literal) before Phase 1, and the
+# defaults are unchanged. tests/test_thresholds.py pins each one.
+#
+# Types matter. Values that were Decimal in code are written as QUOTED STRINGS
+# and become Decimal, so arithmetic and comparisons stay exact. Floats stay
+# floats and ints stay ints. Monetary values are INR.
+#
+# Changing a value here changes detector behaviour. Bump the matching entry in
+# pipeline/versioning.AGENT_VERSIONS when you do.
+
+risk:                                 # analysis/risk.py
+  structuring_lower: "150000"         # ₹1.5 lakh
+  structuring_upper: "200000"         # ₹2 lakh (§269ST cash limit)
+  structuring_window_days: 7
+  structuring_min_count: 4
+  round_trip_min_days: 3
+  round_trip_max_days: 14
+  round_trip_amount_tol: "0.05"       # 5% amount tolerance
+  spike_z: 2.5
+  spike_z_high: 3.5
+  concentration_high: "0.80"          # top-3 customer revenue share
+  concentration_medium: "0.60"
+  round_amount_threshold: 0.30
+  round_amount_high_threshold: 0.60
+  founder_monthly_limit: "500000"     # ₹5 lakh/month with no declared salary
+  founder_salary_multiple: "3"
+  severity_weights:                   # compute_composite_score
+    HIGH: 10.0
+    MEDIUM: 5.0
+    LOW: 2.0
+
+health:                               # analysis/financial_health_alerts.py
+  runway_critical_months: "2"
+  runway_low_months: "4"
+  runway_healthy_months: "6"
+  burn_extreme_ratio: 3.0
+  burn_high_ratio: 1.5
+  nrr_severe_pct: 0.70
+  nrr_contraction_pct: 0.85
+  nrr_par_pct: 1.00
+  churn_high_pct: 0.30
+  churn_elevated_pct: 0.15
+  sustained_decline_months: 3         # consecutive MoM declines → HIGH
+  stagnation_band: "0.02"             # |MoM growth| below this for 3 months → flat
+  burn_acceleration_min_growth: 0.20  # 3-month burn growth
+  burn_acceleration_margin: 0.15      # ... and exceeding revenue growth by this
+
+customer_analytics:                   # analysis/customer_analytics.py
+  churn_silence_months: 3
+  min_months_for_regularity: 6
+  regularity_gap_multiple: 2.0
+  aggregator_dominance_threshold: 0.30
+
+reconciliation:                       # analysis/reconciliation.py
+  severity_high_delta_pct: 30         # |delta| % → HIGH
+  severity_medium_delta_pct: 15       # |delta| % → MEDIUM
+  revenue_tolerance_pct: 8
+  customer_count_tolerance_pct: 12
+  salary_headcount_tolerance_pct: 18
+  nrr_percent_input_cutoff: 5         # declared NRR above this is treated as a percentage
+  nrr_tolerance: 0.08                 # absolute ratio delta
+  nrr_high_delta: 0.20
+
+portfolio:                            # analysis/portfolio_narrative.py
+  high_risk_score: 50.0
+
+india_compliance:                     # jurisdictions/india/rules.py
+  cash_receipt_limit_269st: "200000"
+  cash_loan_limit_269ss_t: "20000"
+  gst_annual_turnover_gate: "4000000"
+  gst_monthly_revenue_floor: "300000"
+  tds_annual_salary_gate: "500000"
+  ctr_cash_window_threshold: "1000000"
+  rpt_concentration_threshold: 0.20
+
+identity:                             # pipeline/customer_identity.py
+  embedding_threshold: 0.85
+
+related_party:                        # pipeline/related_party.py
+  llm_confidence_threshold: 0.8
+  llm_batch_size: 30
+
+categoriser:                          # analysis/categoriser.py
+  llm_batch_size: 50

@@ -339,7 +339,7 @@ class AngelLensReport:
         story += self._build_footer()
 
         pdf.build(story)
-        log.info("Angel lens report written: %s", out)
+        log.info("Angel lens report written: %d bytes", out.stat().st_size)
         return out
 
     # ── Sections ─────────────────────────────────────────────────────────────

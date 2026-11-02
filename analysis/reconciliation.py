@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from typing import TYPE_CHECKING
+
+from config.logging import safe_exc
+from config.settings import llm_key_configured
+from config.thresholds import get_thresholds
+from llm.client import LLMUnavailable, get_llm_client
 
 if TYPE_CHECKING:
     from analysis.customer_analytics import CustomerAnalyticsReport
@@ -26,6 +30,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _ZERO = Decimal("0")
+_TH = get_thresholds().reconciliation  # config/thresholds.yaml
 
 
 class MismatchDirection(StrEnum):
@@ -74,9 +79,9 @@ class ReconciliationReport:
 
 def _severity_from_delta(delta_pct: float) -> str:
     abs_delta = abs(delta_pct)
-    if abs_delta >= 30:
+    if abs_delta >= _TH.severity_high_delta_pct:
         return "HIGH"
-    if abs_delta >= 15:
+    if abs_delta >= _TH.severity_medium_delta_pct:
         return "MEDIUM"
     return "LOW"
 
@@ -124,7 +129,7 @@ def _check_revenue(
             ),
         )
     delta = _pct(actual, claimed)
-    if abs(delta) < 8:
+    if abs(delta) < _TH.revenue_tolerance_pct:
         return None
     direction = MismatchDirection.OVER_REPORTED if delta > 0 else MismatchDirection.UNDER_REPORTED
     return ReconciliationFinding(
@@ -162,7 +167,7 @@ def _check_customer_count(
     claimed = claims.declared_customer_count
     actual = max(customer_analytics.monthly_active_customers.values())
     delta = (claimed - actual) / max(actual, 1) * 100
-    if abs(delta) < 12:
+    if abs(delta) < _TH.customer_count_tolerance_pct:
         return None
     direction = MismatchDirection.OVER_REPORTED if delta > 0 else MismatchDirection.UNDER_REPORTED
     return ReconciliationFinding(
@@ -197,11 +202,11 @@ def _check_nrr(
         return None
     declared = claims.declared_nrr
     # Auto-detect if caller passed percentage (e.g. 110) vs ratio (e.g. 1.10)
-    if declared > 5:
+    if declared > _TH.nrr_percent_input_cutoff:
         declared = declared / 100
     actual_nrr = list(customer_analytics.nrr_per_month.values())[-1]
     delta_abs = abs(declared - actual_nrr)
-    if delta_abs < 0.08:
+    if delta_abs < _TH.nrr_tolerance:
         return None
     direction = MismatchDirection.OVER_REPORTED if declared > actual_nrr else MismatchDirection.UNDER_REPORTED
     return ReconciliationFinding(
@@ -210,7 +215,7 @@ def _check_nrr(
         actual_value=f"{actual_nrr*100:.0f}%",
         direction=direction,
         delta_pct=(declared - actual_nrr) * 100,
-        severity="HIGH" if delta_abs > 0.20 else "MEDIUM",
+        severity="HIGH" if delta_abs > _TH.nrr_high_delta else "MEDIUM",
         description=(
             f"Company claimed {declared*100:.0f}% NRR; bank-derived NRR is {actual_nrr*100:.0f}% "
             f"({delta_abs*100:.0f}pp difference)."
@@ -298,7 +303,7 @@ def _check_salary_headcount(
     # spend) is the base, expected_period (declared-implied spend) is "claimed",
     # matching the contract used by every other check in this module.
     delta = _pct(actual + _ZERO, expected_period)
-    if abs(delta) < 18:
+    if abs(delta) < _TH.salary_headcount_tolerance_pct:
         return None
     direction = MismatchDirection.OVER_REPORTED if delta > 0 else MismatchDirection.UNDER_REPORTED
     return ReconciliationFinding(
@@ -332,7 +337,7 @@ def _check_salary_headcount(
 class ReconciliationAnalyst:
 
     def __init__(self, llm_enabled: bool = True) -> None:
-        self._llm_enabled = llm_enabled and bool(os.getenv("ANTHROPIC_API_KEY"))
+        self._llm_enabled = llm_enabled and llm_key_configured()
 
     def analyse(
         self,
@@ -363,11 +368,6 @@ class ReconciliationAnalyst:
         findings: list[ReconciliationFinding],
         metrics: FinancialMetrics,
     ) -> None:
-        try:
-            import anthropic
-        except ImportError:
-            return
-
         items = [
             {"index": i, "check": f.check_name, "claimed": f.claimed_value,
              "actual": f.actual_value, "direction": str(f.direction), "delta_pct": f.delta_pct}
@@ -381,17 +381,17 @@ class ReconciliationAnalyst:
             f"Mismatches:\n{json.dumps(items, indent=2)}"
         )
         try:
-            client = anthropic.Anthropic()
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1000,
+            text = get_llm_client().complete(
+                prompt,
                 system="You are a VC due-diligence analyst. Respond only with valid JSON.",
-                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1000,
             )
-            raw = json.loads(response.content[0].text.strip())
+            raw = json.loads(text.strip())
             framing_map = {item["index"]: item["framing"] for item in raw}
             for i, finding in enumerate(findings):
                 if i in framing_map:
                     finding.investor_framing = framing_map[i]
+        except LLMUnavailable:
+            return
         except Exception as err:
-            log.warning("LLM polish for reconciliation failed: %s", err)
+            log.warning("LLM polish for reconciliation failed: %s", safe_exc(err))

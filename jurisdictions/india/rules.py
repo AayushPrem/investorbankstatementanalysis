@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from analysis.risk import Severity
+from config.thresholds import get_thresholds
 from jurisdictions import ComplianceException
 
 if TYPE_CHECKING:
@@ -29,37 +30,39 @@ if TYPE_CHECKING:
 
 _ZERO = Decimal("0")
 _LAKH = Decimal("100000")
+_TH = get_thresholds().india_compliance
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Operative thresholds — named constants for auditability.
-# All monetary values in INR. Change a value here to affect all rules uniformly.
+# All monetary values in INR. Values are loaded from config/thresholds.yaml
+# (section "india_compliance"); change them there to affect all rules uniformly.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # §269ST: cash receipts >= ₹2L per counterparty per day are prohibited.
-_269ST_CASH_LIMIT = Decimal("200000")
+_269ST_CASH_LIMIT = _TH.cash_receipt_limit_269st
 
 # §269SS/§269T: loans or deposits accepted/repaid in cash >= ₹20,000 are prohibited.
-_269SS_T_CASH_LOAN_LIMIT = Decimal("20000")
+_269SS_T_CASH_LOAN_LIMIT = _TH.cash_loan_limit_269ss_t
 
 # GST annual turnover gate: businesses with aggregate turnover > ₹40L must register
 # and file monthly returns (CGST Act §22 / §39). ₹40L = ₹4,000,000.
-_GST_ANNUAL_TURNOVER_GATE = Decimal("4000000")
+_GST_ANNUAL_TURNOVER_GATE = _TH.gst_annual_turnover_gate
 
 # GST per-month revenue floor: months with revenue below this are skipped when checking
 # for missing GST payments. Chosen as ~1/13th of the ₹40L annual gate so months with
 # minor or nil activity don't generate false positives.
-_GST_MONTHLY_REVENUE_FLOOR = Decimal("300000")
+_GST_MONTHLY_REVENUE_FLOOR = _TH.gst_monthly_revenue_floor
 
 # TDS salary gate: annualised salary above ₹5L/year triggers mandatory TDS under §192.
-_TDS_ANNUAL_SALARY_GATE = Decimal("500000")
+_TDS_ANNUAL_SALARY_GATE = _TH.tds_annual_salary_gate
 
 # CTR cash-window threshold: aggregate cash >= ₹10L in a rolling 30-day window
 # matches the pattern for a Cash Transaction Report under PMLA Rules 2005 Rule 3(1)(a).
-_CTR_CASH_WINDOW_THRESHOLD = _LAKH * 10  # ₹10,00,000
+_CTR_CASH_WINDOW_THRESHOLD = _TH.ctr_cash_window_threshold  # ₹10,00,000
 
 # Related-party concentration: related-party debits as a share of total debits above
 # this fraction are flagged as a governance concentration signal.
-_RPT_CONCENTRATION_THRESHOLD = 0.20  # 20%
+_RPT_CONCENTRATION_THRESHOLD = _TH.rpt_concentration_threshold  # 20%
 
 
 # ─────────────────────────────────────────────────────────────────────────────

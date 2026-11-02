@@ -28,12 +28,13 @@ import re
 from pathlib import Path
 from typing import Any, cast
 
+from config.thresholds import get_thresholds
 from pipeline.related_party import _clean_name as _strip_noise
 from schema.canonical import StatementDocument, TransactionCategory
 
 log = logging.getLogger(__name__)
 
-_EMBEDDING_THRESHOLD = 0.85
+_EMBEDDING_THRESHOLD = get_thresholds().identity.embedding_threshold  # config/thresholds.yaml
 _CACHE_PATH = Path(".cache/embeddings.json")
 
 # Payment-gateway / aggregator settlement narrations are NOT individual
