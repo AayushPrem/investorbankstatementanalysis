@@ -696,3 +696,172 @@ Before (rules v2) vs after (hybrid, no LLM), test splits, τ frozen from validat
 - **Grid edges:** cross-bank SVC chose C=0.3, the top of {0.1, 0.3}.
 - **Models were trained from an uncommitted working tree on base 0f59c80.** Their metadata says `git_sha 0f59c80` and predates the `git_dirty` field.
 - `make categoriser-*` targets weren't run through make (only the underlying commands).
+
+
+---
+
+## Phase 5: Transaction anomaly detection (`upgrade/p5-anomaly`, 2026-11-02)
+
+This phase adds an unsupervised IsolationForest that flags transactions as unusual for their account, as `kind=ml` "investigate" flags. The flags are a separate stream from the rule detectors (ADR-0005): rule flags, composite score, narrative and gold regression are unchanged. All metrics are on **synthetic data** (corpus v1) and measure detection of *synthetic injections*; see `docs/ml/anomaly.md`. `AGENT_VERSIONS` gains `ml_anomaly: 1.0.0`; `risk` stays 1.0.0.
+
+### What changed
+
+- **Features (`ml/features/transaction_features.py`, new).**
+  - The §11 set: log amount; robust z against the same counterparty and against the same predicted category; first-seen counterparty; counterparty share of month-to-date outflows; 1d/7d velocity; day of week; month-end; days since the counterparty's last row.
+  - Plus `is_credit`.
+  - The pooled model uses a causal account-relative view instead (`acct_amount_z`, `velocity_*_rel`).
+  - **No look-ahead:** one ordered pass per account, where each row reads its state before it is added. `tests/test_transaction_features.py` proves it with prefix invariance, appended future rows, same-day ordering and account independence.
+  - **No labels:**
+    - Category = Phase 4 categoriser predictions (`cat3-svc_cal-company-8a28bbe2-191ad9`, LLM off; v2 rules if no model).
+    - Counterparty = `counterparty_from_narration`: aggregator match, otherwise the first 3 name tokens after Phase 4 masking and removal of rail words, legal suffixes and bank codes.
+    - `clean_counterparty` alone left reference codes in place: 49k keys against 5k true counterparties on a 60k-row sample. The new key gives purity 0.979 and completeness 0.800 on test.
+  - **No `txn_time`:** PDFs and `CanonicalTransaction` have none. So `ml_off_hours_burst` can only be found through its velocity and new-payee traits, and the off-hours property can't be detected from PDF input.
+- **Model (`ml/anomaly/`, new): `data, model, train, evaluate, infer, metrics`, `config.yaml`, `README.md`.**
+  - **Scoring:**
+    - per-account IsolationForest (fitted at scoring time) when the account has ≥ `min_history` rows
+    - otherwise the pooled forest, fitted on train companies
+    - Scores become percentiles against the scorer's reference distribution, and each flag records its scorer.
+  - **Explanations:** top-3 per-feature deviations (|x − median| / IQR). No SHAP.
+  - **Reuse:** `ml/registry.py` and the Phase 4 hash gate (`check_gate`).
+- **Pipeline.**
+  - The `ml_anomaly` stage runs after `risk` (`pipeline/run.py`) and fills `AnalysisResult.anomaly_report`.
+  - It is skipped entirely, with no stage entry, when the model is disabled, unset, missing or fails its sha check, or when sklearn is absent.
+  - If detection fails, the error is logged and there are no ML flags; it never blocks the rule outputs.
+  - `summarise_result` adds `ml_flag_count` and `ml_model_version` only when the stage ran.
+- **Persistence and UI.**
+  - `persist_analysis` writes ML flags with `kind='ml'` and `score`. The CHECK already allowed it, so **no migration** (and no Postgres-only DDL to check).
+  - The workbench lens gets an "Investigate (ML)" sheet and PDF block; the demo risk tab gets an expander. Both appear only when ML flags exist.
+  - Angel and VC lenses and the narrative are unchanged.
+- **Config.**
+  - `config/thresholds.yaml → anomaly`: `model_version, contamination, min_history, severity_high_pct, severity_medium_pct, max_flags_per_statement`, with `AnomalyThresholds`.
+  - `config/settings.py` gains `anomaly_model_version` (env override) and `anomaly_ml_enabled`.
+  - **Fix that came with this:** Phase 4's `write_thresholds` regex matched `  model_version:` anywhere in the file, and would have broken once a second section had that key. Both writers now use `config.thresholds.update_section`, which edits only lines inside the named section.
+- **Infra.**
+  - Makefile: `anomaly-train`, `anomaly-eval`.
+  - CI trains a 50-tree model on v1-small after the categoriser step and exports `ANOMALY_MODEL_VERSION`.
+  - ADR-0005 records the separate flag stream.
+
+### Training and selection: `python -m ml.anomaly.train data/corpus/v1 --n-jobs 3`
+
+- **Hash gate:** before training, the rebuilt corpus gave `corpus_hash 8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1` and `splits_hash a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe`, matching the pins.
+- **Pooled forest:** 431,417 rows from 700 train companies, fit in 11.2 s.
+- **Selection:** on 150 validation companies (92,849 rows).
+
+| min_history | accounts pooled (val) | micro P@20 | AP |
+|---|---|---|---|
+| **150** | 2 | **0.0887** | 0.0991 |
+| 250 | 16 | 0.0817 | 0.0929 |
+| 400 | 51 | 0.0747 | 0.0817 |
+
+| contamination | flagged | TP | precision | recall | F1 |
+|---|---|---|---|---|---|
+| 0.002 | 258 | 62 | 0.2403 | 0.0963 | 0.1375 |
+| **0.005** | 547 | 107 | 0.1956 | 0.1661 | **0.1797** |
+| 0.01 | 1009 | 148 | 0.1467 | 0.2298 | 0.1791 |
+| 0.02 | 1753 | 193 | 0.1101 | 0.2997 | 0.1610 |
+| 0.05 | 2769 | 255 | 0.0921 | 0.3960 | 0.1494 |
+
+- **Severity.**
+  - **First run.** The targets were 0.30 / 0.15 and the cutoff grid started at 0.95. MEDIUM landed at 0.95, below the flag threshold, because the whole flagged set (0.196) already met 0.15.
+  - **Fix.** The grid now starts at 1 − contamination and the targets are 0.40 / 0.25. This was decided on validation only, before test was scored.
+  - **Result.** MEDIUM ≥ 0.9986 (val precision 0.251). HIGH can't reach 0.40 (the highest on val is 0.304), so it falls back to the default 0.999 (val 0.277).
+  - The first-run model was deleted.
+
+### Evaluation: `python -m ml.anomaly.evaluate data/corpus/v1 --write-thresholds` (test, once)
+
+- **Test set:** 150 companies, 93,217 rows. Prevalence: any 0.695%, ml_only 0.172%.
+- **Scorers used:** per-account for 148 companies, pooled for 2.
+- **Reading the table:** "mac" is the per-company mean, "mic" is pooled. The full table is in the model card.
+
+| method | label | positives | P@10 mac | R@10 mac | P@20 mac | R@20 mac | R@20 mic | P@50 mac | R@50 mac | AP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| iforest | any | 648 | 0.143 | 0.367 | 0.098 | 0.483 | 0.454 | 0.055 | 0.664 | 0.120 |
+| zscore_baseline | any | 648 | 0.133 | 0.307 | 0.095 | 0.419 | 0.441 | 0.053 | 0.605 | 0.097 |
+| iforest_all_pooled | any | 648 | 0.077 | 0.201 | 0.061 | 0.312 | 0.284 | 0.040 | 0.492 | 0.059 |
+| iforest | rule | 342 | 0.061 | 0.281 | 0.045 | 0.411 | 0.395 | 0.025 | 0.567 | 0.037 |
+| iforest | compliance | 146 | 0.049 | 0.569 | 0.028 | 0.644 | 0.582 | 0.014 | 0.768 | 0.101 |
+| zscore_baseline | compliance | 146 | 0.060 | 0.633 | 0.041 | 0.801 | 0.836 | 0.018 | 0.901 | 0.055 |
+| iforest | ml_only | 160 | 0.033 | 0.416 | 0.025 | 0.536 | 0.463 | 0.015 | 0.771 | 0.022 |
+| zscore_baseline | ml_only | 160 | 0.022 | 0.189 | 0.020 | 0.341 | 0.375 | 0.013 | 0.596 | 0.021 |
+| iforest | ml_first_time_large_counterparty | 41 | 0.015 | 0.672 | 0.009 | 0.759 | 0.659 | 0.004 | 0.862 | 0.015 |
+| iforest | ml_off_hours_burst | 100 | 0.013 | 0.183 | 0.013 | 0.352 | 0.390 | 0.009 | 0.668 | 0.010 |
+| zscore_baseline | ml_off_hours_burst | 100 | 0.017 | 0.223 | 0.014 | 0.400 | 0.420 | 0.008 | 0.570 | 0.015 |
+| iforest | ml_vendor_amount_outlier | 19 | 0.004 | 0.316 | 0.003 | 0.421 | 0.421 | 0.002 | 0.789 | 0.003 |
+
+- **Against the rules.** The rule and compliance detectors were run with predicted categories and pipeline enrichment.
+  - They flag 30,320 rows and recall 0.576 of any-anomaly rows. They catch **0 of 160 ml_only rows**, by injector design.
+  - The ML top-20 per company catches 74 ml_only rows and 126 any-anomaly rows that the rules miss.
+  - The ML flagged set (548 rows, precision 0.221) catches 43 any-anomaly rows the rules miss, 21 of them ml_only.
+- **Severity on test:**
+
+  | band | rows | precision |
+  |---|---|---|
+  | HIGH | 177 | 0.350 |
+  | MEDIUM | 22 | 0.136 |
+  | LOW | 349 | 0.160 |
+
+  The bands aren't monotone (see Not verified).
+- **Inference:** **683.2 ms per 1k rows** on 10 test companies (5,102 rows), median of 3 runs. That covers features, the per-account fit and score, and flags; categorisation is not included.
+- **Outputs:** `results/anomaly/anom1-pooled-company-8a28bbe2-a77238/` (gitignored).
+
+### Files
+
+- **Added:**
+  - `ml/features/transaction_features.py`
+  - `ml/anomaly/{__init__,data,model,train,evaluate,infer,metrics}.py`, `ml/anomaly/config.yaml`, `ml/anomaly/README.md`
+  - `models/anomaly/anom1-pooled-company-8a28bbe2-a77238/metadata.json`
+  - `docs/ml/anomaly.md`, `docs/adr/0005-anomaly-separate-flag-stream.md`
+  - `tests/test_transaction_features.py`, `tests/test_ml_anomaly.py`
+- **Modified:**
+  - `pipeline/{run,versioning}.py`
+  - `config/{settings,thresholds}.py`, `config/thresholds.yaml`
+  - `ml/categoriser/evaluate.py` (section-scoped thresholds writer)
+  - `db/repositories/results.py`
+  - `reports/workbench_lens.py`
+  - `demo/{pipeline_runner.py,components/tabs_risk.py}`
+  - `Makefile`, `.github/workflows/ci.yml`
+  - tests: `tests/test_thresholds.py`, `tests/test_run.py`, `tests/platform/{test_api,test_jobs_worker}.py`
+- **Removed:** none
+
+### Existing tests consciously updated
+
+- `test_run.py::test_result_shape`, `platform/test_jobs_worker.py::test_gold_pdf_end_to_end` and `platform/test_api.py::test_dq_flags_summary_executions` pinned the stage list, the execution count (14) and `kind == "rule"`.
+  - They now expect `ml_anomaly` right after `risk`, and `kind ∈ {rule, ml}`, only when the stage ran. With no stage, all flags must be `rule`.
+  - They pass with the model and with `ANOMALY_ML_ENABLED=false`.
+- `test_thresholds.py`: pins the `anomaly` section and adds a section-scoped writer test.
+
+### Verified (run in this session, Windows 11, Python 3.12.2, scikit-learn 1.9.1, pyarrow 26.0.0)
+
+| Check | Before (cc1b990) | After |
+|---|---|---|
+| corpus / splits rebuild | n/a | `8a28bbe2…f3d1` / `a905e9f1…9efe` (match the pins) |
+| `pytest tests/ -q --ignore=tests/regression` | 1172 passed, 5 skipped (Phase 4 entry) | **1204 passed, 5 skipped** (production categoriser + anomaly model configured) |
+| `pytest tests/regression` | 7 passed, 1 xfailed, 1 xpassed | 7 passed, 1 xfailed, 1 xpassed (with and without the anomaly model) |
+| Risk recall / Compliance recall | 0.8846 (n=13) / 0.9 (n=10) | 0.8846 / 0.9 (unchanged) |
+| CI simulation (v1-small LR categoriser + 50-tree anomaly model via env) | n/a | anomaly/run/platform/versioning tests 117 passed, 5 skipped; regression 7 passed, 1 xfailed, 1 xpassed |
+
+- **`gold_regression.json` diff.**
+  - **Production models.** The baseline was saved on this branch before any code change. The file is **identical except for `timestamp`**, both with the anomaly model and with `ANOMALY_ML_ENABLED=false`.
+  - **CI's v1-small categoriser.** The regression gives risk_recall 0.85, identical with and without the anomaly stage, so it comes from the Phase 4 CI categoriser, not from Phase 5.
+- **End to end** (`run_analysis` on `hdfc_healthy_saas_5d2a8b.pdf`):
+  - Stages include `ml_anomaly` after `risk`.
+  - 291 rows scored per-account, 2 ML flags (HIGH, LOW) with "investigate" wording.
+  - Rule flags (1) and composite score (5.0) are unchanged; `tests/test_ml_anomaly.py` asserts equality against the no-model run.
+- **Static checks:** `ruff check .` clean. `mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/`: `Success: no issues found in 66 source files`.
+- **Security (manual; `/security-review` can't run here):**
+  - New log lines carry counts, versions, timings and exception types only.
+  - Flag descriptions contain no amounts or names.
+  - `joblib.load` is reached only via `registry.load`, after the sha256 check.
+  - The model version comes from operator config or env.
+  - No findings.
+
+### Not verified / known gaps
+
+- **CI result:** pending; added after the push.
+- **Severity bands aren't monotone on test.** MEDIUM is a 22-row slice with precision 0.136, below LOW at 0.160. Only HIGH separates clearly (0.350). HIGH is a validation fallback (0.999).
+- **Gain over the single-feature baseline is modest overall** (P@10 0.143 vs 0.133). It is large for first-time large counterparties and vendor amount outliers. The baseline is better on compliance rows and off-hours bursts.
+- **The pooled fallback is much weaker** (all-pooled P@10 0.077) and scored only 2 test companies. Real short statements would rely on it.
+- **Per-account forests are transductive** (fitted on the whole statement). The features are causal; the model isn't fitted on history only.
+- **Latency:** 683 ms per 1k rows, roughly 6× the categoriser. Fewer trees weren't evaluated.
+- **Narration counterparty keys split vendors.** There are 82 derived keys per company against 45 true counterparties, which inflates `cp_first_seen`.
+- **Training state.** The model was trained from an uncommitted working tree on base cc1b990 (`git_dirty: true`). `make anomaly-*` targets weren't run through make (only the underlying commands).

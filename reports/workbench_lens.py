@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from io import BytesIO
+from typing import Any
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -58,6 +59,9 @@ class WorkbenchAnalysisResult:
     reconciliation_report: ReconciliationReport
     company_name: str | None = None
     narrative: str | None = None  # one-paragraph summary — see analysis/report_narrative.py
+    # Phase 5: ml.anomaly.infer.AnomalyReport (kind=ml "investigate" flags), or None.
+    # Rendered in its own sheet/PDF block only when it has flags.
+    anomaly_report: Any = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -248,6 +252,32 @@ def _sheet_risk(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
     ws.cell(row=row, column=1, value="Total Flags").font = Font(bold=True)
     ws.cell(row=row, column=2, value=str(len(r.risk_report.flags))).font = Font(bold=True)
     ws.cell(row=row, column=3, value=f"{high} High / {med} Medium / {low} Low").font = Font(bold=True)
+    _autowidth(ws)
+
+
+ML_SECTION_TITLE = "Investigate (ML)"
+ML_CAVEAT = ("Unsupervised outlier scores (IsolationForest): transactions unusual for this "
+             "account. A prompt to investigate, not a finding of wrongdoing. Separate from the "
+             "rule-based risk flags and not included in the risk score.")
+
+
+def _ml_flags(r: WorkbenchAnalysisResult) -> list[Any]:
+    ar = r.anomaly_report
+    return list(ar.flags) if ar is not None else []
+
+
+def _sheet_ml(wb: Workbook, r: WorkbenchAnalysisResult) -> None:
+    flags = _ml_flags(r)
+    ws = wb.create_sheet(ML_SECTION_TITLE)
+    ws.cell(row=1, column=1, value=ML_CAVEAT).font = Font(italic=True)
+    _header_row(ws, ["Transaction ID", "Severity", "Score", "Percentile", "Scorer", "Why"], row=3)
+    for i, flag in enumerate(flags, 4):
+        ev = flag.evidence or {}
+        _data_row(ws, [", ".join(flag.triggering_transaction_ids), str(flag.severity),
+                       f"{flag.score:.4f}", f"{ev.get('percentile', 0):.4f}", ev.get("scorer", ""),
+                       flag.description], row=i, fills=[None, _sev_fill(flag.severity)])
+    ws.cell(row=len(flags) + 5, column=1,
+            value=f"Model {r.anomaly_report.model_version}").font = Font(bold=True)
     _autowidth(ws)
 
 
@@ -515,6 +545,26 @@ def _build_pdf(r: WorkbenchAnalysisResult) -> bytes:
     else:
         story.append(Paragraph("No risk flags detected.", styles["body"]))
 
+    ml_flags = _ml_flags(r)
+    if ml_flags:
+        story.append(Spacer(1, 3*mm))
+        story.append(Paragraph(ML_SECTION_TITLE, styles["h2"]))
+        story.append(Paragraph(ML_CAVEAT, styles["body"]))
+        ml_data = [["Transaction", "Severity", "Why"]]
+        for flag in ml_flags[:6]:
+            ml_data.append([", ".join(flag.triggering_transaction_ids)[:30], str(flag.severity),
+                            flag.description[:80]])
+        mt = Table(ml_data, colWidths=[45*mm, 22*mm, 108*mm])
+        mt.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7),
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#44546A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.3, rl_colors.lightgrey),
+            ("PADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(mt)
+
     story.append(PageBreak())
 
     # ── Page 2: Compliance ───────────────────────────────────────────────────
@@ -626,6 +676,8 @@ class WorkbenchLensReport:
         _sheet_summary(wb, result)
         _sheet_financial(wb, result)
         _sheet_risk(wb, result)
+        if _ml_flags(result):
+            _sheet_ml(wb, result)
         _sheet_customers(wb, result)
         _sheet_compliance(wb, result)
         _sheet_reconciliation(wb, result)

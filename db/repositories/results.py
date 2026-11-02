@@ -236,6 +236,19 @@ def persist_analysis(
             evidence=to_jsonable(f.evidence),
             transaction_ids=[str(id_map[i]) for i in f.triggering_transaction_ids if i in id_map],
         ))
+    # Phase 5: unsupervised "investigate" flags (absent when no anomaly model).
+    anomaly = getattr(analysis, "anomaly_report", None)
+    for af in anomaly.flags if anomaly is not None else []:
+        session.add(Flag(
+            run_id=run.id,
+            detector=af.detector_name,
+            kind="ml",
+            severity=str(af.severity),
+            score=float(af.score),
+            description=af.description,
+            evidence=to_jsonable(af.evidence),
+            transaction_ids=[str(id_map[i]) for i in af.triggering_transaction_ids if i in id_map],
+        ))
 
     outputs: dict[str, Any] = {
         "metrics": analysis.metrics,

@@ -28,7 +28,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from adapters.base import RawStatement
 from analysis.categoriser import CategorisationStats, Categoriser
@@ -58,6 +58,9 @@ from pipeline.validator import (
     parse_header_amount,
 )
 from schema.canonical import StatementDocument, ValidationStatus
+
+if TYPE_CHECKING:
+    from ml.anomaly.infer import AnomalyDetector, AnomalyReport
 
 log = logging.getLogger(__name__)
 
@@ -158,6 +161,9 @@ class AnalysisResult:
     stage_names: list[str] = field(default_factory=list)
     # Phase 2 DQ report (informational; Validator.validate still gates).
     dq_report: DQReport | None = None
+    # Phase 5: kind=ml "investigate" flags, kept separate from risk_report.flags
+    # (no effect on composite score / narrative). None when no anomaly model.
+    anomaly_report: AnomalyReport | None = None
 
 
 # ── Adapter selection ────────────────────────────────────────────────────────
@@ -300,6 +306,23 @@ def run_analysis(
             ctx["flags"] = len(risk_report.flags)
         stages.append("risk")
 
+        # Phase 5: unsupervised anomaly flags. Skipped entirely (no stage entry,
+        # anomaly_report=None) when no model is configured or loadable.
+        anomaly_report = None
+        detector = resolve_anomaly_detector()
+        if detector is not None:
+            with _stage(opts.stage_observer, "ml_anomaly") as ctx:
+                ctx["model_version"] = detector.version
+                try:
+                    anomaly_report = detector.detect(doc)
+                except Exception as exc:  # noqa: BLE001 — ML must never block the rule outputs
+                    log.warning("ml_anomaly failed; no ML flags", extra={"error": safe_exc(exc)})
+                    ctx["error"] = type(exc).__name__
+                else:
+                    ctx["flags"] = len(anomaly_report.flags)
+                    ctx.update({f"scored_{k}": v for k, v in anomaly_report.scorer_counts.items()})
+            stages.append("ml_anomaly")
+
         with _stage(opts.stage_observer, "customer_analytics"):
             customer_analytics = CustomerAnalyticsAnalyst().analyse(doc)
         stages.append("customer_analytics")
@@ -351,7 +374,17 @@ def run_analysis(
         run_id=run_id,
         stage_names=stages,
         dq_report=dq_report,
+        anomaly_report=anomaly_report,
     )
+
+
+def resolve_anomaly_detector() -> AnomalyDetector | None:
+    """The configured anomaly detector, or None (sklearn missing / no model / disabled)."""
+    try:
+        from ml.anomaly.infer import resolve_detector
+    except ImportError:  # the [ml] extra isn't installed
+        return None
+    return resolve_detector()
 
 
 def _narrative(

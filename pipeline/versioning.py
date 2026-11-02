@@ -42,6 +42,9 @@ AGENT_VERSIONS: dict[str, str] = {
     "financial_health_alerts": "1.0.0",
     "compliance": "1.0.0",
     "reconciliation": "1.0.0",
+    # Phase 5: unsupervised IsolationForest "investigate" flags (kind=ml), a
+    # separate stream from the rule detectors (risk stays 1.0.0, unchanged).
+    "ml_anomaly": "1.0.0",
 }
 
 JURISDICTION_MODULE_VERSION = "india-1.0.0"
@@ -201,7 +204,7 @@ def summarise_result(demo_result: Any) -> dict[str, Any]:
     m = demo_result.metrics
     rr = demo_result.risk_report
     ca = demo_result.customer_analytics
-    return {
+    summary: dict[str, Any] = {
         "transaction_count": len(demo_result.doc.transactions),
         "total_revenue": str(m.total_revenue),
         "total_burn": str(m.total_burn),
@@ -215,6 +218,12 @@ def summarise_result(demo_result: Any) -> dict[str, Any]:
         ),
         "churn_event_count": len(ca.churn_events),
     }
+    # Phase 5: only when the ml_anomaly stage ran, so the no-model summary is unchanged.
+    ar = getattr(demo_result, "anomaly_report", None)
+    if ar is not None:
+        summary["ml_flag_count"] = len(ar.flags)
+        summary["ml_model_version"] = ar.model_version
+    return summary
 
 
 def replay(store: ResultStore, run_id: str) -> StoredRun:

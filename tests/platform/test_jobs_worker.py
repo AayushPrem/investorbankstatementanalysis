@@ -67,7 +67,15 @@ def test_gold_pdf_end_to_end(factory: sessionmaker[Session], settings: Settings,
         assert run.agent_versions["categoriser"] == "3.0.0"  # Phase 4 bump (v3 routing)
         stages = list(s.scalars(select(StageExecution.stage).where(StageExecution.run_id == run.id)
                                 .order_by(StageExecution.created_at, StageExecution.id)))
-        assert stages == ALL_STAGES + ["render_reports"]
+        # Phase 5: ml_anomaly runs right after risk only when an anomaly model resolves,
+        # and then its flags are persisted with kind='ml' next to the rule flags.
+        ml = ["ml_anomaly"] if "ml_anomaly" in stages else []
+        i = ALL_STAGES.index("risk") + 1
+        assert stages == ALL_STAGES[:i] + ml + ALL_STAGES[i:] + ["render_reports"]
+        flag_kinds = set(s.scalars(select(Flag.kind).where(Flag.run_id == run.id)))
+        assert flag_kinds <= {"rule", "ml"}
+        if not ml:
+            assert "ml" not in flag_kinds
         doc = s.get(Document, res.document_id)
         assert doc is not None and doc.status == "processed"
         n_txn = s.scalar(select(func.count()).select_from(Transaction)

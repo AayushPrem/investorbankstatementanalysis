@@ -1,0 +1,44 @@
+# Phase 5 anomaly model: training / selection / evaluation configuration.
+# SYNTHETIC data only (corpus v1). See docs/ml/anomaly.md.
+
+# Data gate (same pattern as ml/categoriser): train/evaluate refuse to run
+# unless corpus and split hashes match. Unpinned corpora (CI's v1-small) need
+# --allow-unpinned and are recorded as such in metadata.
+pinned_corpora:
+  v1:
+    corpus_hash: 8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1
+    splits_hash: a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe
+
+split_file: company.parquet   # fit pooled on train, select on val, report once on test
+
+forest:
+  n_estimators: 200
+  max_samples: 256
+  seed: 42
+
+selection:                    # all chosen on VALIDATION companies
+  min_history_grid: [150, 250, 400]
+  min_history_metric: micro_p_at_20   # any-anomaly rows; ties -> average precision
+  contamination_grid: [0.002, 0.005, 0.01, 0.02, 0.05]
+  contamination_metric: f1            # flagged set vs any-anomaly rows; ties -> smaller
+  max_flags_per_statement: 20         # analyst review budget (applied before scoring F1)
+  # Severity: HIGH/MEDIUM = lowest percentile cutoff (from 1 - contamination
+  # up) whose flagged-row precision on val reaches the target; otherwise the
+  # default is used and recorded as a fallback. Targets were first 0.30/0.15;
+  # the whole flagged set already reached 0.196 on val, so MEDIUM swallowed
+  # every flag and LOW was empty. Raised to 0.40/0.25 (val only, before test).
+  target_precision_high: 0.40
+  target_precision_medium: 0.25
+  severity_grid: {stop: 0.9999, step: 0.0001}     # start = 1 - contamination
+  default_severity_high_pct: 0.999
+  default_severity_medium_pct: 0.995
+
+ci_profile:                   # CI: tiny model on v1-small, no grid search
+  n_estimators: 50
+  min_history: 250
+  contamination: 0.01
+
+evaluate:
+  ks: [10, 20, 50]
+  latency_rows: 1000
+  latency_runs: 3

@@ -117,9 +117,12 @@ class TestRunAnalysis:
         assert analysis.doc.transactions
         assert analysis.narrative
         assert analysis.run_id
+        # Phase 5: "ml_anomaly" runs after "risk" only when an anomaly model is
+        # configured (tests/test_ml_anomaly.py covers both paths).
+        ml = ["ml_anomaly"] if analysis.anomaly_report is not None else []
         assert analysis.stage_names == [
             "ingest", "normalise", "validate", "categorise", "financial_analysis",
-            "related_party", "customer_identity", "risk", "customer_analytics",
+            "related_party", "customer_identity", "risk", *ml, "customer_analytics",
             "financial_health", "compliance", "reconciliation", "narrative",
         ]
 

@@ -30,6 +30,7 @@ def render_tab_risk(result: DemoResult) -> None:
 
     if not r.flags:
         st.success("No flags detected in scope across the 6 automated detectors.")
+        _render_ml_flags(result)
         return
 
     st.markdown(f"**{len(r.flags)} flag(s) detected:**")
@@ -54,6 +55,28 @@ def render_tab_risk(result: DemoResult) -> None:
         st.divider()
         st.markdown("**Analyst Narrative**")
         st.info(r.narrative)
+
+    _render_ml_flags(result)
+
+
+def _render_ml_flags(result: DemoResult) -> None:
+    """Phase 5: kind=ml flags, shown apart from the rule flags (only when present)."""
+    from reports.workbench_lens import ML_CAVEAT, ML_SECTION_TITLE
+
+    ar = getattr(result, "anomaly_report", None)
+    if ar is None or not ar.flags:
+        return
+    st.divider()
+    st.markdown(f"**{ML_SECTION_TITLE}: {len(ar.flags)} transaction(s)**")
+    st.caption(ML_CAVEAT)
+    for flag in ar.flags:
+        fg, bg = SEV_COLOURS.get(str(flag.severity), ("#374151", "#F3F4F6"))
+        with st.expander(
+            f"{badge(str(flag.severity), fg, bg)} &nbsp; `{', '.join(flag.triggering_transaction_ids)}`",
+            expanded=False,
+        ):
+            st.markdown(flag.description)
+            st.json(flag.evidence)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

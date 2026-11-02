@@ -107,6 +107,35 @@ def test_categoriser_v3_routing_thresholds_pinned() -> None:
     assert 0.0 <= c.tau_review <= c.tau_accept <= 1.0
 
 
+def test_anomaly_thresholds_pinned() -> None:
+    """Phase 5: chosen on company-split validation companies by ml/anomaly/train.py and
+    written by `ml.anomaly.evaluate --write-thresholds`. Change only with a retrain."""
+    a = get_thresholds().anomaly
+    _same(a.model_version, "anom1-pooled-company-8a28bbe2-a77238")
+    _same(a.contamination, 0.005)
+    _same(a.min_history, 150)
+    _same(a.severity_high_pct, 0.999)
+    _same(a.severity_medium_pct, 0.9986)
+    _same(a.max_flags_per_statement, 20)
+    assert 1.0 - a.contamination <= a.severity_medium_pct <= a.severity_high_pct <= 1.0
+
+
+def test_update_section_is_section_scoped(tmp_path: Path) -> None:
+    """categoriser and anomaly both have model_version; each writer touches only its section."""
+    from config.thresholds import update_section
+
+    p = tmp_path / "t.yaml"
+    p.write_text(Path("config/thresholds.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    update_section(p, "anomaly", {"model_version": '"anom-x"', "contamination": "0.02"})
+    update_section(p, "categoriser", {"model_version": '"cat-y"'})
+    t = load_thresholds(p)
+    assert (t.anomaly.model_version, t.anomaly.contamination) == ("anom-x", 0.02)
+    assert t.categoriser.model_version == "cat-y"
+    assert "# flagged fraction per account" in p.read_text(encoding="utf-8")
+    with pytest.raises(ThresholdConfigError):
+        update_section(p, "anomaly", {"no_such_key": "1"})
+
+
 def test_formerly_inline_literals() -> None:
     t = get_thresholds()
     _same(t.health.sustained_decline_months, 3)

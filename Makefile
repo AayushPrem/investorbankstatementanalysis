@@ -17,7 +17,7 @@ PY := $(VENV_BIN)/python
 TYPECHECK_GATED := schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/
 TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
-.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker corpus corpus-small categoriser-audit categoriser-train categoriser-eval
+.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker corpus corpus-small categoriser-audit categoriser-train categoriser-eval anomaly-train anomaly-eval
 
 install:
 	$(BOOTSTRAP_PY) -m venv $(VENV)
@@ -76,3 +76,10 @@ categoriser-train:
 
 categoriser-eval:
 	$(PY) -m ml.categoriser.evaluate data/corpus/v1 --write-thresholds
+
+# ── Anomaly detection (Phase 5). SYNTHETIC data; see docs/ml/anomaly.md.
+anomaly-train:
+	$(PY) -m ml.anomaly.train data/corpus/v1
+
+anomaly-eval:
+	$(PY) -m ml.anomaly.evaluate data/corpus/v1 --write-thresholds

@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import re
 import time
 from datetime import date
 from decimal import Decimal
@@ -332,13 +331,11 @@ def evaluate_split(split: str, data: CorpusData, frame: pd.DataFrame, fm: np.nda
 
 
 def write_thresholds(version: str, tau_accept: float, tau_review: float, path: Path) -> None:
-    s = path.read_text(encoding="utf-8")
-    s, n1 = re.subn(r'(?m)^(  model_version: ).*$', rf'\g<1>"{version}"', s)
-    s, n2 = re.subn(r'(?m)^(  tau_accept: ).*$', rf"\g<1>{tau_accept:.2f}", s)
-    s, n3 = re.subn(r'(?m)^(  tau_review: ).*$', rf"\g<1>{tau_review:.2f}", s)
-    if (n1, n2, n3) != (1, 1, 1):
-        raise RuntimeError("could not locate categoriser keys in thresholds.yaml")
-    path.write_text(s, encoding="utf-8", newline="\n")
+    from config.thresholds import update_section
+
+    update_section(path, "categoriser", {"model_version": f'"{version}"',
+                                          "tau_accept": f"{tau_accept:.2f}",
+                                          "tau_review": f"{tau_review:.2f}"})
 
 
 def _f(v: Any, nd: int = 4) -> str:

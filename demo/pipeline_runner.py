@@ -13,6 +13,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -54,6 +55,8 @@ class DemoResult:
     vc_pdf_bytes: bytes
     workbench_xlsx_bytes: bytes
     workbench_pdf_bytes: bytes
+    # Phase 5: ml.anomaly.infer.AnomalyReport, or None when no anomaly model.
+    anomaly_report: Any = None
     # backward-compat alias
     report_bytes: bytes = field(init=False)
 
@@ -109,6 +112,7 @@ def render_reports(analysis: AnalysisResult) -> RenderedReports:
         reconciliation_report=analysis.reconciliation_report,
         company_name=cname,
         narrative=narrative,
+        anomaly_report=analysis.anomaly_report,
     )
     wb_xlsx, wb_pdf = WorkbenchLensReport().generate(workbench_result)
 
@@ -148,4 +152,5 @@ def run_pipeline_on_bytes(
         vc_pdf_bytes=reports.vc_pdf,
         workbench_xlsx_bytes=reports.workbench_xlsx,
         workbench_pdf_bytes=reports.workbench_pdf,
+        anomaly_report=analysis.anomaly_report,
     )

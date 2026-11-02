@@ -130,6 +130,19 @@ class CategoriserThresholds:
 
 
 @dataclass(frozen=True)
+class AnomalyThresholds:
+    # Phase 5 (ml/anomaly). Chosen on company-split VALIDATION companies by
+    # ml/anomaly/train.py and written by `ml.anomaly.evaluate --write-thresholds`.
+    # model_version "unset" (or no artifact in models/anomaly/) -> no ML flags.
+    model_version: str
+    contamination: float            # flagged fraction per account (score percentile)
+    min_history: int                # rows; below this the pooled model scores the account
+    severity_high_pct: float        # score percentile cutoffs for HIGH / MEDIUM
+    severity_medium_pct: float
+    max_flags_per_statement: int    # analyst review budget
+
+
+@dataclass(frozen=True)
 class Thresholds:
     risk: RiskThresholds
     health: HealthThresholds
@@ -140,6 +153,7 @@ class Thresholds:
     identity: IdentityThresholds
     related_party: RelatedPartyThresholds
     categoriser: CategoriserThresholds
+    anomaly: AnomalyThresholds
 
 
 _T = TypeVar("_T")
@@ -202,6 +216,33 @@ def load_thresholds(path: Path | str | None = None) -> Thresholds:
     if unknown:
         raise ThresholdConfigError(f"{p}: unknown sections {sorted(unknown)}")
     return Thresholds(**{s: _build(top_hints[s], s, data.get(s)) for s in sections})
+
+
+def update_section(path: Path | str, section: str, values: dict[str, str]) -> None:
+    """Rewrite ``key: value`` lines inside one top-level section of the YAML.
+
+    ``values`` are already-formatted YAML scalars. Comments and other sections
+    are kept. Raises if a key isn't found exactly once in that section.
+    """
+    p = Path(path)
+    lines = p.read_text(encoding="utf-8").split("\n")
+    start = next((i for i, ln in enumerate(lines) if ln.startswith(f"{section}:")), None)
+    if start is None:
+        raise ThresholdConfigError(f"section {section!r} not found in {p}")
+    end = next((i for i in range(start + 1, len(lines))
+                if lines[i] and not lines[i].startswith((" ", "#"))), len(lines))
+    for key, val in values.items():
+        hits = [i for i in range(start + 1, end) if lines[i].startswith(f"  {key}:")]
+        if len(hits) != 1:
+            raise ThresholdConfigError(f"{section}.{key}: expected one line, found {len(hits)}")
+        i = hits[0]
+        # Keep a trailing comment at its original column (values here contain no '#').
+        head, sep, tail = lines[i].partition("#")
+        new = f"  {key}: {val}"
+        if sep:
+            new = new.ljust(len(head) if len(head) > len(new) else len(new) + 1) + "#" + tail
+        lines[i] = new
+    p.write_text("\n".join(lines), encoding="utf-8", newline="\n")
 
 
 @lru_cache(maxsize=1)

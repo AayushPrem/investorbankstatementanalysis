@@ -218,8 +218,11 @@ def test_dq_flags_summary_executions(client: TestClient, headers: dict[str, str]
     assert dq["passed"] is True and len(dq["checks"]) == 9
     flags = client.get(f"/v1/runs/{rid}/flags", headers=headers).json()
     assert isinstance(flags, list)
+    # Phase 5: kind=ml flags come from the ml_anomaly stage (only with a model).
     for f in flags:
-        assert f["kind"] == "rule" and f["severity"] in ("LOW", "MEDIUM", "HIGH")
+        assert f["kind"] in ("rule", "ml") and f["severity"] in ("LOW", "MEDIUM", "HIGH")
+        if f["kind"] == "ml":
+            assert f["detector"] == "ml_anomaly" and f["score"] is not None
     if flags:
         sev = flags[0]["severity"]
         only = client.get(f"/v1/runs/{rid}/flags?severity={sev.lower()}", headers=headers).json()
@@ -229,7 +232,10 @@ def test_dq_flags_summary_executions(client: TestClient, headers: dict[str, str]
     assert {"metrics", "customer_analytics", "narrative"} <= set(summary["outputs"])
     assert summary["outputs"]["narrative"]["company_name"] == "Acme"
     execs = client.get(f"/v1/runs/{rid}/executions", headers=headers).json()
-    assert len(execs) == 14 and all(e["status"] == "succeeded" for e in execs)
+    ml_stage = any(e["stage"] == "ml_anomaly" for e in execs)
+    assert len(execs) == 14 + ml_stage and all(e["status"] == "succeeded" for e in execs)
+    if not ml_stage:
+        assert all(f["kind"] == "rule" for f in flags)
 
 
 @pytest.mark.parametrize("lens,fmt,magic", [

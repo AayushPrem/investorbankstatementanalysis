@@ -97,3 +97,15 @@ categoriser:                          # analysis/categoriser.py
   # 2,6 (0 support), 3 personal_suffix (generator-fitted), 7 self_transfer
   # (precision 0.0), 11-13 generic fallbacks. See docs/ml/categoriser.md.
   high_precision_rules: [0, 1, 4, 5, 8, 9, 10]
+
+anomaly:                              # ml/anomaly (Phase 5), stage ml_anomaly in pipeline/run.py
+  # Chosen on company-split VALIDATION companies by `python -m ml.anomaly.train`
+  # and written by `python -m ml.anomaly.evaluate ... --write-thresholds`
+  # (docs/ml/anomaly.md). If model_version is "unset" or the artifact is not in
+  # models/anomaly/, the stage is skipped and no ML flags are produced.
+  model_version: "anom1-pooled-company-8a28bbe2-a77238"
+  contamination: 0.005                # flagged fraction per account (score percentile)
+  min_history: 150                    # rows; shorter accounts are scored by the pooled model
+  severity_high_pct: 0.9990           # score-percentile cutoffs
+  severity_medium_pct: 0.9986
+  max_flags_per_statement: 20         # analyst review budget

@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     # CATEGORISER_ML_ENABLED=false to force the v2 rules-only path.
     categoriser_model_version: str | None = None
     categoriser_ml_enabled: bool = True
+    # Phase 5: overrides anomaly.model_version in config/thresholds.yaml (CI sets
+    # it to the model it trains on the small corpus). ANOMALY_ML_ENABLED=false
+    # skips the ml_anomaly stage (no ML flags; nothing else changes).
+    anomaly_model_version: str | None = None
+    anomaly_ml_enabled: bool = True
     embeddings_enabled: bool = False
 
     # ── Phase 2: data platform (db/, api/, worker/) ─────────────────────────

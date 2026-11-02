@@ -81,6 +81,13 @@ jobs:
           .venv/bin/python -m ml.categoriser.train data/corpus/v1-small --profile ci --allow-unpinned | tee train_ci.txt
           grep '^CATEGORISER_MODEL_VERSION=' train_ci.txt >> "$GITHUB_ENV"
 
+      # Phase 5: train a small anomaly model on v1-small (categories from the CI
+      # categoriser above) so the suite and the regression run the ml_anomaly stage.
+      - name: Train CI anomaly model (v1-small)
+        run: |
+          .venv/bin/python -m ml.anomaly.train data/corpus/v1-small --profile ci --allow-unpinned --n-jobs 2 | tee anomaly_ci.txt
+          grep '^ANOMALY_MODEL_VERSION=' anomaly_ci.txt >> "$GITHUB_ENV"
+
       - name: Test
         run: .venv/bin/python -m pytest tests/ -q --ignore=tests/regression --tb=short
 
