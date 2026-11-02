@@ -61,7 +61,9 @@ def _swap(values: tuple[str, ...]) -> None:
         with op.batch_alter_table("categorisations", copy_from=_table(values), recreate="always"):
             pass
     else:
-        op.drop_constraint(_CK, "categorisations", type_="check")
+        # op.f(): the name is already final. A bare name would get the metadata
+        # naming convention applied again (ck_categorisations_ck_categorisations_source).
+        op.drop_constraint(op.f(_CK), "categorisations", type_="check")
         op.create_check_constraint(op.f(_CK), "categorisations", _sources_sql(values))
 
 
