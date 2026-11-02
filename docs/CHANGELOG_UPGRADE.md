@@ -76,7 +76,7 @@ The goal was a reproducible, green starting point with no pipeline behaviour cha
 
 This phase removed duplication and hardcoding and added one canonical pipeline entry point. It is a pure refactor. `AGENT_VERSIONS` was not bumped, and the regression output is identical to `docs/baseline_2026-11.md` (see "Verified").
 
-Task 6 (splitting `demo/app.py`) is **deferred** to a follow-up session on this branch. When it's done, the target is `demo/views/` + `demo/components/`, not `demo/pages/`, because Streamlit auto-discovers a `pages/` folder next to the entry script and would add sidebar navigation, which is a UI change.
+Tasks 1–5 and 7 landed in commit 20c2375 (CI passed). Task 6, the `demo/app.py` split, was done in a follow-up session on the same branch; see the "Task 6" bullets below.
 
 ### What changed
 
@@ -156,12 +156,20 @@ Task 6 (splitting `demo/app.py`) is **deferred** to a follow-up session on this 
   - `make install` and CI install `.[dev,ocr,embeddings]` so the whole suite still runs.
   - The CI venv cache lost its `restore-keys`. A `pyproject.toml` change now builds a fresh venv, so a removed package can't linger in a cached venv and hide a missing dependency.
 - **Type-check scope:** `config/` and `llm/` were added to the gated mypy scope, in both the Makefile `TYPECHECK_GATED` and `ci.yml`.
+- **Task 6: UI split.** `demo/app.py` went from 1,668 lines to 64 and now holds only the sys.path bootstrap, `set_page_config`, `configure_logging()`, the theme CSS call and the mode switch. Everything else moved to two packages:
+  - `demo/views/` holds the screens: `landing`, `single_company` (source → two-pass cached pipeline run → lens), `lenses` (which tabs Angel / VC / Workbench show), and `network`.
+  - `demo/components/` holds the building blocks: `sidebar`, `summary`, `tabs_financial`, `tabs_risk`, `tabs_customers`, `downloads`, `network_tables`, `theme`, `formatting`, `labels`.
+  - Imports go one way only: `app → views → components`. The components make no Streamlit calls at import time.
+  - **The guide says `demo/pages/`; we used `views/` on purpose.** Streamlit auto-discovers a `pages/` folder next to the entry script and adds sidebar navigation, which would be a UI change.
+  - **The code moved, it wasn't rewritten.** A script sliced the original by line ranges, so function bodies are verbatim. The only edits are private names becoming public (`_badge` → `badge`, `_sidebar` → `render_statement_source`, …), each module's imports, and one block lifted out of `main()` into `render_status_badges()` with no change. Widget order, widget keys, labels and `session_state` keys are unchanged.
 
 ### Files
 
 - **Added:** `config/__init__.py`, `config/settings.py`, `config/thresholds.py`, `config/thresholds.yaml`, `config/logging.py`, `llm/__init__.py`, `llm/client.py`, `pipeline/run.py`, `.env.example`, `tests/test_thresholds.py`, `tests/test_llm_client.py`, `tests/test_logging_config.py`, `tests/test_run.py`
 - **Modified:** `analysis/{categoriser,compliance,customer_analytics,financial_health_alerts,portfolio_narrative,reconciliation,report_narrative,risk}.py`, `jurisdictions/india/rules.py`, `pipeline/{batch,customer_identity,orchestrator,related_party}.py`, `reports/angel_lens.py`, `demo/pipeline_runner.py`, `demo/app.py` (only the `configure_logging()` call), `tests/conftest.py`, `pyproject.toml`, `Makefile`, `.github/workflows/ci.yml`, `docs/CHANGELOG_UPGRADE.md`
 - **Removed:** none
+- **Task 6, added:** `demo/views/{__init__,landing,single_company,lenses,network}.py`, `demo/components/{__init__,theme,formatting,labels,sidebar,summary,tabs_financial,tabs_risk,tabs_customers,downloads,network_tables}.py`
+- **Task 6, modified:** `demo/app.py` (now the entry point only), `README.md` (demo tree), `docs/CHANGELOG_UPGRADE.md`
 
 ### Verified (run in this session, Windows 11, Python 3.12.2)
 
@@ -188,13 +196,39 @@ Task 6 (splitting `demo/app.py`) is **deferred** to a follow-up session on this 
 - Fresh venv + `pip install -e ".[dev,ocr]"` (no `[embeddings]`): install succeeds and `pip check` reports no broken requirements. None of the removed packages are installed (Jinja2 only transitively).
 - That fresh venv (no `sentence-transformers`, no torch) then ran `pytest -q --ignore=tests/regression`: **1016 passed**. The venv had to live at a short path (`.vf/`, since deleted) because the scratchpad path exceeded Windows' 260-character limit during `pip install`.
 
+**CI for 20c2375 (tasks 1–5, 7): passed** on GitHub Actions (Linux), as reported by the user.
+
+**Task 6 (UI split), run in the follow-up session:**
+
+- **The element trees are identical before and after.** A scratchpad script, not committed, ran Streamlit's `AppTest` against the old `app.py` (`git show 20c2375:demo/app.py`, copied in temporarily) and against the new one, in 9 scenarios.
+  - It serialised every element's protobuf (type, labels, bodies, options, decoded dataframe contents, plotly specs, sidebar vs main, tab labels), dropping only widget ids, URLs and exception stack traces, and diffed old against new.
+  - The synthetic generator calls `uuid.uuid4()` for narration refs and transaction IDs even when it is seeded, so the script pinned `uuid4` to a seeded RNG for each run. Without that, the transaction tables differed only in those random suffixes.
+  - Result: `9/9 scenarios identical`.
+
+  | Scenario | Element nodes |
+  |---|---|
+  | landing_angel / landing_vc / landing_workbench | 56 each |
+  | network_empty | 11 |
+  | angel_generated | 72 |
+  | vc_generated | 112 |
+  | workbench_generated_claims | 123 |
+  | workbench_affiliate_selected | 33 (same exception, see known gaps) |
+  | network_cohort (3 companies, seeded) | 50 |
+
+- `pytest tests/test_demo_ui.py -q`: **9 passed**.
+- `pytest -q` (full suite including regression): **1024 passed, 1 xfailed, 1 xpassed**, 0 failed.
+- `pytest tests/regression -q -s`: **7 passed, 1 xfailed, 1 xpassed**, with every metric the same as the table above (100.0 / 99.9 / 88.5 n=13 / 90.0 n=10 / 66.6 pairs=176521). `gold_regression.json` is identical to the previous run except for `timestamp`.
+- `ruff check .`: clean. mypy is unchanged, because `demo/` is outside its configured scope.
+- `streamlit run demo/app.py --server.headless true` booted, and `/_stcore/health` returned `ok`.
+
 ### Not verified / known gaps
 
+- **Pre-existing demo bug, found by the task 6 equivalence check and deliberately not fixed:** selecting any counterparty under "Mark as affiliates" crashes the single-company view with `ValidationError: 1 validation error for Affiliate — relationship Field required`. `affiliate_selector` builds `Affiliate(name=...)`, but `Affiliate.relationship` is a required field. The same code is in 74799d1, before the upgrade, so the bug predates it. Task 6 had to leave the UI unchanged, so it's left for a later phase. The likely fix is `relationship="user_tagged"`, or making the field optional. No test covers the affiliate path.
+- **CI for the task 6 commit:** pending at the time of writing; see the push report.
 - **The real LLM path was not run.** No API key was used in this session. Its request shape is checked against a stubbed SDK client (`tests/test_llm_client.py`), not against the live API.
 - **The `[embeddings]` extra was not installed in a fresh venv** (torch is large). The existing `.venv`, which has `sentence-transformers`, ran the full suite.
 - **OCR on a real scanned PDF wasn't run.** The tesseract binary isn't checked; only adapter *selection* is tested.
-- **Linux CI:** results are in the push report for this phase.
-- **Task 6 (UI split) is pending.**
+- **Linux CI:** passed for 20c2375 (see above).
 - `jurisdictions/india/rules.py` still defines `_LAKH`, which is now unused there.
 - **Pre-existing flaky tests, found this session and not caused by Phase 1:**
   - `tests/test_vc_lens.py::TestEdgeCases::test_generate_is_idempotent` compares XLSX byte lengths. openpyxl writes wall-clock `created`/`modified` timestamps into `docProps/core.xml`, and that was confirmed to be the only differing part. Two calls in different seconds can change the compressed size (seen once: 12087 vs 12084). `reports/vc_lens.py` is not modified in this phase. Fix in a later phase by pinning workbook properties or comparing sheet contents; it isn't fixed here because pinning would change report output.

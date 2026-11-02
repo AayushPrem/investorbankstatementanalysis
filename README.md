@@ -496,7 +496,9 @@ investorproject/
 ├── tools/
 │   └── synthetic_gen.py       # Realistic bank statement PDF generator
 ├── demo/
-│   ├── app.py                 # Streamlit UI — 4 per-lens analysis modes
+│   ├── app.py                 # Streamlit entry point — page config + mode switch
+│   ├── views/                 # Screens: landing, single_company, lenses (Angel/VC/Workbench), network
+│   ├── components/            # Building blocks: sidebar, tabs_*, summary, downloads, theme, formatting
 │   └── pipeline_runner.py     # Pipeline orchestration for the demo
 ├── tests/                     # 900+ pytest tests + tests/regression/ gold-set suite
 └── .cache/                    # Categoriser + embedding caches
