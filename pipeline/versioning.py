@@ -38,13 +38,17 @@ AGENT_VERSIONS: dict[str, str] = {
     "customer_identity": "1.0.0",
     "financial_analyst": "1.0.0",
     "risk": "1.0.0",
-    "customer_analytics": "1.0.0",
+    "customer_analytics": "1.1.0",  # Phase 6: optional churn_risk (rule churn unchanged)
     "financial_health_alerts": "1.0.0",
     "compliance": "1.0.0",
     "reconciliation": "1.0.0",
     # Phase 5: unsupervised IsolationForest "investigate" flags (kind=ml), a
     # separate stream from the rule detectors (risk stays 1.0.0, unchanged).
     "ml_anomaly": "1.0.0",
+    # Phase 6: churn model scoring inside customer_analytics (absent without a
+    # model), and company segmentation in the Network Lens.
+    "ml_churn": "1.0.0",
+    "segmentation": "1.0.0",
 }
 
 JURISDICTION_MODULE_VERSION = "india-1.0.0"
@@ -223,6 +227,11 @@ def summarise_result(demo_result: Any) -> dict[str, Any]:
     if ar is not None:
         summary["ml_flag_count"] = len(ar.flags)
         summary["ml_model_version"] = ar.model_version
+    # Phase 6: only when the churn model scored, so the no-model summary is unchanged.
+    if getattr(ca, "churn_risk", None) is not None:
+        summary["churn_risk_count"] = len(ca.churn_risk)
+        summary["churn_model_version"] = next(
+            (r.model_version for r in ca.churn_risk.values() if r.model_version), None)
     return summary
 
 

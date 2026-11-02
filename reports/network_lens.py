@@ -79,6 +79,17 @@ class ComplianceDetail:
 
 
 @dataclass
+class SegmentDetail:
+    """Phase 6: a company's segment (ml/segmentation), shown only when a model is configured."""
+    segment: int
+    name: str
+    stable: bool
+    pc1: float
+    pc2: float
+    peers: list[str] = field(default_factory=list)   # nearest cohort companies, nearest first
+
+
+@dataclass
 class CompanySummary:
     """One row's worth of cross-company comparison data."""
     company_name: str
@@ -101,6 +112,10 @@ class CompanySummary:
     detail_report_path: str | None = None  # optional link target for Sheet 4
     aggregator_revenue_pct: float = 0.0     # share of revenue from payment-aggregator settlements
     aggregator_dominated: bool = False      # customer analytics unreliable if True
+    # Phase 6: segmentation inputs (pipeline outputs only) and the assigned
+    # segment. Both None when no segmentation model is configured.
+    segment_features: dict[str, float] | None = None
+    segment: SegmentDetail | None = None
 
 
 def build_company_summary(
@@ -172,7 +187,47 @@ def build_company_summary(
         detail_report_path=detail_report_path,
         aggregator_revenue_pct=customer_analytics.aggregator_revenue_pct,
         aggregator_dominated=customer_analytics.is_aggregator_dominated,
+        segment_features=_segment_features(doc, metrics),
     )
+
+
+def _segmentation_model() -> tuple[object, str] | None:
+    try:
+        from ml.segmentation.infer import resolve_model
+    except ImportError:  # the [ml] extra isn't installed
+        return None
+    return resolve_model()
+
+
+def _segment_features(doc: StatementDocument, metrics: FinancialMetrics) -> dict[str, float] | None:
+    """Segmentation features, computed only when a segmentation model is configured."""
+    if _segmentation_model() is None:
+        return None
+    from ml.features.company_features import raw_features
+
+    return raw_features(doc, metrics)
+
+
+def assign_segments(summaries: list[CompanySummary]) -> bool:
+    """Fill ``segment`` (segment, name, nearest cohort peers, PCA position) in place.
+
+    Only companies with ``segment_features`` take part. Returns False, changing
+    nothing, when no segmentation model is configured.
+    """
+    idx = [i for i, s in enumerate(summaries) if s.segment_features is not None]
+    res = _segmentation_model() if idx else None
+    if res is None:
+        return False
+    from config.thresholds import get_thresholds
+    from ml.segmentation.infer import assign
+
+    model, _ = res
+    rows = [summaries[i].segment_features or {} for i in idx]
+    for i, a in zip(idx, assign(model, rows, get_thresholds().segmentation.n_peers), strict=True):  # type: ignore[arg-type]
+        summaries[i].segment = SegmentDetail(
+            segment=a.segment, name=a.name, stable=a.stable, pc1=a.pc1, pc2=a.pc2,
+            peers=[summaries[idx[j]].company_name for j, _ in a.peers])
+    return True
 
 
 def build_portfolio_narrative(summaries: list[CompanySummary], llm_enabled: bool = True) -> str:
@@ -443,6 +498,55 @@ def _sheet_sector_breakdown(wb: Workbook, summaries: list[CompanySummary]) -> No
 # Sheet 5 — Individual company links
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _sheet_segments(wb: Workbook, summaries: list[CompanySummary]) -> None:
+    """Phase 6: segment + nearest peers per company (only when segments exist)."""
+    ws = wb.create_sheet("Segments")
+    headers = ["Company", "Segment", "Segment name", "Stable", "Nearest peers", "PC1", "PC2"]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c, value=h)
+        cell.font = _HEADER_FONT
+        cell.fill = _NAVY
+    r = 2
+    for s in summaries:
+        if s.segment is None:
+            continue
+        seg = s.segment
+        vals = [s.company_name, seg.segment, seg.name, "yes" if seg.stable else "no",
+                ", ".join(seg.peers) or "—", round(seg.pc1, 3), round(seg.pc2, 3)]
+        for c, v in enumerate(vals, 1):
+            ws.cell(row=r, column=c, value=v).font = _BODY_FONT
+        r += 1
+    ws.cell(row=r + 1, column=1, value=(
+        "Segments come from an unsupervised model trained on a SYNTHETIC corpus "
+        "(docs/ml/segmentation.md). Peers are the nearest companies in this cohort.")).font = _BODY_FONT
+    _autowidth(ws)
+
+
+def _pca_png(summaries: list[CompanySummary]) -> bytes:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(6, 4.2))
+    segs = sorted({s.segment.segment for s in summaries if s.segment is not None})
+    for k in segs:
+        pts = [s for s in summaries if s.segment is not None and s.segment.segment == k]
+        name = pts[0].segment.name if pts[0].segment else str(k)
+        ax.scatter([p.segment.pc1 for p in pts if p.segment], [p.segment.pc2 for p in pts if p.segment],
+                   s=30, label=f"{k}: {name}", color=f"C{k}")
+        for p in pts:
+            if p.segment is not None:
+                ax.annotate(p.company_name[:18], (p.segment.pc1, p.segment.pc2), fontsize=6)
+    ax.set(xlabel="PC1", ylabel="PC2", title="Company segments (2-D PCA)")
+    ax.legend(fontsize=6)
+    fig.tight_layout()
+    out = BytesIO()
+    fig.savefig(out, format="png", dpi=130)
+    plt.close(fig)
+    return out.getvalue()
+
+
 def _sheet_company_links(wb: Workbook, summaries: list[CompanySummary]) -> None:
     ws = wb.create_sheet("Company Reports")
     ws.cell(row=1, column=1, value="Company").font = _HEADER_FONT
@@ -613,6 +717,34 @@ def _build_dashboard_pdf(summaries: list[CompanySummary], narrative: str) -> byt
                 ))
             story.append(Spacer(1, 3 * mm))
 
+    if any(s.segment is not None for s in summaries):
+        from reportlab.platypus import Image
+
+        story.append(PageBreak())
+        story.append(Paragraph("Company Segments", styles["h1"]))
+        story.append(HRFlowable(width="100%", thickness=1, color=navy))
+        story.append(Spacer(1, 3 * mm))
+        story.append(Image(BytesIO(_pca_png(summaries)), width=150 * mm, height=105 * mm))
+        seg_data = [["Company", "Segment", "Nearest peers"]]
+        for s in summaries:
+            if s.segment is not None:
+                label = s.segment.name if s.segment.stable else f"{s.segment.segment} (unstable)"
+                seg_data.append([s.company_name, Paragraph(label, styles["body"]),
+                                 Paragraph(", ".join(s.segment.peers) or "—", styles["body"])])
+        seg_tbl = Table(seg_data, colWidths=[45 * mm, 60 * mm, 70 * mm])
+        seg_tbl.setStyle(TableStyle([
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("BACKGROUND", (0, 0), (-1, 0), rl_colors.HexColor("#44546A")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), rl_colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.3, rl_colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ]))
+        story.append(seg_tbl)
+        story.append(Paragraph(
+            "Unsupervised segments from a model trained on a SYNTHETIC corpus; a grouping aid, "
+            "not a rating (docs/ml/segmentation.md).", styles["body"]))
+
     doc.build(story)
     return buf.getvalue()
 
@@ -646,12 +778,15 @@ class NetworkLensReport:
         if narrative is None:
             narrative = build_portfolio_narrative(summaries, llm_enabled=llm_enabled)
 
+        assign_segments(summaries)   # Phase 6: no-op without a segmentation model
         wb = Workbook()
         _sheet_comparison(wb, summaries)
         _sheet_risk_compliance_detail(wb, summaries, narrative)
         _sheet_risk_distribution(wb, summaries)
         _sheet_sector_breakdown(wb, summaries)
         _sheet_company_links(wb, summaries)
+        if any(s.segment is not None for s in summaries):
+            _sheet_segments(wb, summaries)
 
         buf = BytesIO()
         wb.save(buf)

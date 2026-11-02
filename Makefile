@@ -17,7 +17,7 @@ PY := $(VENV_BIN)/python
 TYPECHECK_GATED := schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/
 TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
-.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker corpus corpus-small categoriser-audit categoriser-train categoriser-eval anomaly-train anomaly-eval
+.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker corpus corpus-small categoriser-audit categoriser-train categoriser-eval anomaly-train anomaly-eval churn-train churn-eval segmentation-train segmentation-eval
 
 install:
 	$(BOOTSTRAP_PY) -m venv $(VENV)
@@ -83,3 +83,16 @@ anomaly-train:
 
 anomaly-eval:
 	$(PY) -m ml.anomaly.evaluate data/corpus/v1 --write-thresholds
+
+# ── Churn model & company segmentation (Phase 6). SYNTHETIC data; see docs/ml/{churn,segmentation}.md.
+churn-train:
+	$(PY) -m ml.churn.train data/corpus/v1
+
+churn-eval:
+	$(PY) -m ml.churn.evaluate data/corpus/v1 --write-thresholds
+
+segmentation-train:
+	$(PY) -m ml.segmentation.train data/corpus/v1
+
+segmentation-eval:
+	$(PY) -m ml.segmentation.evaluate data/corpus/v1 --write-thresholds

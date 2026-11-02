@@ -143,6 +143,29 @@ class AnomalyThresholds:
 
 
 @dataclass(frozen=True)
+class ChurnThresholds:
+    # Phase 6 (ml/churn). Chosen on TRAIN companies by grouped-CV out-of-fold
+    # predictions (ml/churn/train.py) and written by
+    # `ml.churn.evaluate --write-thresholds`. model_version "unset" (or no
+    # artifact in models/churn/) -> no churn_risk; rule churn events unchanged.
+    model_version: str
+    decision_threshold: float       # calibrated p >= this -> band "high"
+    band_medium: float              # calibrated p >= this -> band "medium"
+    min_history_payments: int       # below this the rule scores the customer
+    active_window_days: int         # "active" = paid within this many days of the last txn
+    rule_silence_days: int          # rule fallback: days since last payment -> "elevated"
+
+
+@dataclass(frozen=True)
+class SegmentationThresholds:
+    # Phase 6 (ml/segmentation), used by the Network Lens. model_version "unset"
+    # (or no artifact in models/segmentation/) -> no segments; lens unchanged.
+    model_version: str
+    n_peers: int                    # nearest cohort peers shown per company
+    stable_jaccard: float           # bootstrap Jaccard needed to name a cluster
+
+
+@dataclass(frozen=True)
 class Thresholds:
     risk: RiskThresholds
     health: HealthThresholds
@@ -154,6 +177,8 @@ class Thresholds:
     related_party: RelatedPartyThresholds
     categoriser: CategoriserThresholds
     anomaly: AnomalyThresholds
+    churn: ChurnThresholds
+    segmentation: SegmentationThresholds
 
 
 _T = TypeVar("_T")

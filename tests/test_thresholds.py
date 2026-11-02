@@ -120,6 +120,27 @@ def test_anomaly_thresholds_pinned() -> None:
     assert 1.0 - a.contamination <= a.severity_medium_pct <= a.severity_high_pct <= 1.0
 
 
+def test_churn_thresholds_pinned() -> None:
+    """Phase 6: chosen on TRAIN companies (grouped-CV OOF) by ml/churn/train.py and written
+    by `ml.churn.evaluate --write-thresholds`. Change only with a retrain."""
+    c = get_thresholds().churn
+    _same(c.model_version, "churn1-hgb_l15-8a28bbe2-2023be")
+    _same(c.decision_threshold, 0.275)
+    _same(c.band_medium, 0.1749)
+    _same(c.min_history_payments, 2)
+    _same(c.active_window_days, 90)
+    _same(c.rule_silence_days, 60)
+    assert 0.0 < c.band_medium <= c.decision_threshold < 1.0
+
+
+def test_segmentation_thresholds_pinned() -> None:
+    """Phase 6: segmentation model for the Network Lens (ml/segmentation)."""
+    s = get_thresholds().segmentation
+    _same(s.model_version, "seg1-kmeans-k3-8a28bbe2-4ff229")
+    _same(s.n_peers, 3)
+    _same(s.stable_jaccard, 0.75)
+
+
 def test_update_section_is_section_scoped(tmp_path: Path) -> None:
     """categoriser and anomaly both have model_version; each writer touches only its section."""
     from config.thresholds import update_section

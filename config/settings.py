@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # skips the ml_anomaly stage (no ML flags; nothing else changes).
     anomaly_model_version: str | None = None
     anomaly_ml_enabled: bool = True
+    # Phase 6: override churn.model_version / segmentation.model_version in
+    # config/thresholds.yaml (CI sets them to models trained on the small corpus).
+    # CHURN_ML_ENABLED=false -> no churn_risk; SEGMENTATION_ML_ENABLED=false -> no
+    # Network Lens segments. Nothing else changes either way.
+    churn_model_version: str | None = None
+    churn_ml_enabled: bool = True
+    segmentation_model_version: str | None = None
+    segmentation_ml_enabled: bool = True
     embeddings_enabled: bool = False
 
     # ── Phase 2: data platform (db/, api/, worker/) ─────────────────────────

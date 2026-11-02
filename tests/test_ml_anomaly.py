@@ -212,6 +212,9 @@ def test_pipeline_ml_stage_changes_nothing_else(tiny_model: AnomalyModel, tmp_pa
 
     data = (_GOLD / f"{_HDFC_STEM}.pdf").read_bytes()
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Phase 6: the "on" run points MODELS_DIR at tmp_path, where no churn model
+    # exists; disable churn in both runs so only the anomaly stage differs.
+    monkeypatch.setenv("CHURN_ML_ENABLED", "false")
     monkeypatch.setenv("ANOMALY_ML_ENABLED", "false")
     off = run_analysis(data, f"{_HDFC_STEM}.pdf")
     assert off.anomaly_report is None and "ml_anomaly" not in off.stage_names

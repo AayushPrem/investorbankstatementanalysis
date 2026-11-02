@@ -109,3 +109,22 @@ anomaly:                              # ml/anomaly (Phase 5), stage ml_anomaly i
   severity_high_pct: 0.9990           # score-percentile cutoffs
   severity_medium_pct: 0.9986
   max_flags_per_statement: 20         # analyst review budget
+
+churn:                                # ml/churn (Phase 6), CustomerAnalyticsAnalyst.churn_risk
+  # Chosen on TRAIN companies (5-fold GroupKFold out-of-fold predictions) by
+  # `python -m ml.churn.train` and written by `python -m ml.churn.evaluate ...
+  # --write-thresholds` (docs/ml/churn.md). If model_version is "unset" or the
+  # artifact is not in models/churn/, churn_risk is absent and nothing else changes.
+  model_version: "churn1-hgb_l15-8a28bbe2-2023be"
+  decision_threshold: 0.275           # calibrated probability -> band "high"
+  band_medium: 0.1749                 # calibrated probability -> band "medium"
+  min_history_payments: 2             # payments; fewer -> rule fallback
+  active_window_days: 90              # active = paid within 90 days of the last transaction
+  rule_silence_days: 60               # rule fallback: silent longer -> "elevated" (not tuned)
+
+segmentation:                         # ml/segmentation (Phase 6), Network Lens segments
+  # Written by `python -m ml.segmentation.evaluate ... --write-thresholds`
+  # (docs/ml/segmentation.md). "unset" or missing artifact -> no segments.
+  model_version: "seg1-kmeans-k3-8a28bbe2-4ff229"
+  n_peers: 3                          # nearest cohort peers per company
+  stable_jaccard: 0.75                # Hennig: >= 0.75 stable; only stable clusters are named

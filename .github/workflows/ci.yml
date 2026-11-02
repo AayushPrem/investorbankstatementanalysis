@@ -88,6 +88,16 @@ jobs:
           .venv/bin/python -m ml.anomaly.train data/corpus/v1-small --profile ci --allow-unpinned --n-jobs 2 | tee anomaly_ci.txt
           grep '^ANOMALY_MODEL_VERSION=' anomaly_ci.txt >> "$GITHUB_ENV"
 
+      # Phase 6: small churn (one LR, 3-fold grouped CV) and segmentation (k=2..4)
+      # models on v1-small, so the suite and the regression exercise churn_risk and
+      # Network Lens segments.
+      - name: Train CI churn + segmentation models (v1-small)
+        run: |
+          .venv/bin/python -m ml.churn.train data/corpus/v1-small --profile ci --allow-unpinned --n-jobs 2 | tee churn_ci.txt
+          grep '^CHURN_MODEL_VERSION=' churn_ci.txt >> "$GITHUB_ENV"
+          .venv/bin/python -m ml.segmentation.train data/corpus/v1-small --profile ci --allow-unpinned --n-jobs 2 | tee seg_ci.txt
+          grep '^SEGMENTATION_MODEL_VERSION=' seg_ci.txt >> "$GITHUB_ENV"
+
       - name: Test
         run: .venv/bin/python -m pytest tests/ -q --ignore=tests/regression --tb=short
 

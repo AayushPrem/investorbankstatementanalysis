@@ -11,6 +11,7 @@ import logging
 import statistics
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Protocol
 
 from config.thresholds import get_thresholds
 from pipeline.customer_identity import ANOMALY_FLAG_AGGREGATOR_SETTLEMENT
@@ -57,6 +58,29 @@ class RegularityAlert:
 
 
 @dataclass
+class ChurnRisk:
+    """Phase 6: churn risk for one active customer (only when a churn model is configured).
+
+    ``source="model"``: ``score`` is the calibrated probability of no payment in
+    the next 90 days (ml/churn, docs/ml/churn.md) and ``band`` is high/medium/low.
+    ``source="rule"``: history is shorter than ``churn.min_history_payments``;
+    ``score`` is None and ``band`` is elevated/low by days since the last payment.
+    """
+    customer_id: str
+    band: str
+    source: str
+    score: float | None
+    n_payments: int
+    model_version: str | None
+
+
+class ChurnScorer(Protocol):
+    version: str
+
+    def score(self, doc: StatementDocument) -> dict[str, ChurnRisk]: ...
+
+
+@dataclass
 class CustomerAnalyticsReport:
     monthly_active_customers: dict[str, int]
     monthly_active_trend: float             # linear-regression slope (customers per month)
@@ -74,6 +98,10 @@ class CustomerAnalyticsReport:
     # callers (e.g. reports/workbench_lens.py's Customer Master sheet) look up
     # per-customer active status without re-deriving it from raw transactions.
     active_customer_ids_by_month: dict[str, frozenset[str]] = field(default_factory=dict)
+    # Phase 6: customer_id -> ChurnRisk for active customers. None (and omitted
+    # from serialised output) when no churn model is configured, so the no-model
+    # payload is unchanged. Rule churn_events above are independent of it.
+    churn_risk: dict[str, ChurnRisk] | None = field(default=None, metadata={"omit_if_none": True})
 
     @property
     def is_aggregator_dominated(self) -> bool:
@@ -323,7 +351,20 @@ def _aggregator_revenue_pct(doc: StatementDocument) -> float:
 class CustomerAnalyticsAnalyst:
     """Derives customer-level analytics from a fully categorised StatementDocument."""
 
+    def __init__(self, churn_scorer: ChurnScorer | None = None) -> None:
+        self._churn_scorer = churn_scorer
+
     def analyse(self, doc: StatementDocument) -> CustomerAnalyticsReport:
+        report = self._analyse_rules(doc)
+        if self._churn_scorer is not None:
+            # Computed after, and independently of, every rule metric above.
+            try:
+                report.churn_risk = self._churn_scorer.score(doc)
+            except Exception as exc:  # noqa: BLE001 — the model must never block rule analytics
+                log.warning("churn model failed; no churn_risk (%s)", type(exc).__name__)
+        return report
+
+    def _analyse_rules(self, doc: StatementDocument) -> CustomerAnalyticsReport:
         aggregator_pct = _aggregator_revenue_pct(doc)
 
         rev_txns = [

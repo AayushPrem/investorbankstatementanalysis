@@ -1,0 +1,32 @@
+# Phase 6 segmentation: training / selection / evaluation configuration.
+# SYNTHETIC data only (corpus v1). See docs/ml/segmentation.md.
+#
+# Selection is label-free and pre-registered here. ARI against the hidden
+# generator profile is computed by evaluate.py only, never used to choose.
+
+pinned_corpora:
+  v1:
+    corpus_hash: 8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1
+    splits_hash: a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe
+
+split_file: segmentation_holdout.parquet   # fit (800) / holdout (200)
+
+seed: 42
+k_range: [2, 10]
+kmeans_n_init: 10
+bootstrap: 100                 # Hennig clusterboot resamples of the fit set
+stable_jaccard: 0.75           # Hennig: >= 0.75 stable, 0.6-0.75 patterns, < 0.6 dissolved
+
+# Rule (fit set only):
+#  1. K-Means k* = highest silhouette among k whose mean bootstrap Jaccard >= stable_jaccard
+#     (no such k -> highest silhouette, recorded as a fallback).
+#  2. Candidates: kmeans@k*, gmm@k*, gmm@best-BIC k, agglomerative(ward)@k*,
+#     agglomerative@best-silhouette k.
+#  3. Final = highest silhouette among stable candidates; ties -> kmeans.
+
+ci_profile:
+  k_range: [2, 4]
+  bootstrap: 10
+
+evaluate:
+  latency_runs: 3

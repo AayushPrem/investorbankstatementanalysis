@@ -204,6 +204,19 @@ def render_network_mode() -> None:
 
     with tab_compare:
         render_network_comparison(summaries)
+        # Phase 6: segments exist only when a segmentation model is configured
+        # (NetworkLensReport.generate assigned them in place).
+        if any(s.segment is not None for s in summaries):
+            from reports.network_lens import _pca_png
+
+            st.markdown("##### 🧩 Company Segments (unsupervised; synthetic-trained)")
+            st.dataframe([
+                {"Company": s.company_name, "Segment": s.segment.segment,
+                 "Name": s.segment.name if s.segment.stable else "unstable",
+                 "Nearest peers": ", ".join(s.segment.peers)}
+                for s in summaries if s.segment is not None
+            ], use_container_width=True, hide_index=True)
+            st.image(_pca_png(summaries), caption="2-D PCA of scaled company features")
 
     with tab_detail:
         render_network_detail(summaries)

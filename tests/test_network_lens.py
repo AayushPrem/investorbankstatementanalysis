@@ -134,9 +134,13 @@ class TestNetworkLensReport:
         xlsx_bytes, pdf_bytes = NetworkLensReport().generate(summaries)
         assert pdf_bytes.startswith(b"%PDF")
         wb = load_workbook(BytesIO(xlsx_bytes))
+        # Phase 6: a "Segments" sheet is appended only when a segmentation model
+        # is configured (tests/test_ml_segmentation.py covers both paths).
+        seg = ["Segments"] if all(s.segment is not None for s in summaries) else []
+        assert all(s.segment is None for s in summaries) or seg
         assert wb.sheetnames == [
             "Comparison", "Risk & Compliance Detail", "Risk Distribution",
-            "Sector Breakdown", "Company Reports",
+            "Sector Breakdown", "Company Reports", *seg,
         ]
 
     def test_comparison_sheet_has_one_row_per_company(self) -> None:

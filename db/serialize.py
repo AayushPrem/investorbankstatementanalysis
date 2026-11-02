@@ -29,7 +29,10 @@ def to_jsonable(obj: Any) -> Any:
     if isinstance(obj, BaseModel):
         return to_jsonable(obj.model_dump())
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return {f.name: to_jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+        # A field marked metadata={"omit_if_none": True} is left out while it is None,
+        # so optional additions (e.g. Phase 6 churn_risk) don't change existing payloads.
+        return {f.name: to_jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)
+                if not (f.metadata.get("omit_if_none") and getattr(obj, f.name) is None)}
     if isinstance(obj, dict):
         return {str(to_jsonable(k)): to_jsonable(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set, frozenset)):

@@ -1,0 +1,45 @@
+# Phase 6 churn model: training / selection / evaluation configuration.
+# SYNTHETIC data only (corpus v1). See docs/ml/churn.md.
+#
+# Every choice below is made on TRAIN companies with 5-fold GroupKFold (groups =
+# company) out-of-fold predictions. The validation split (82 company-cutoffs,
+# ~41 companies) is only a pre-registered check; test is reported once.
+
+pinned_corpora:
+  v1:
+    corpus_hash: 8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1
+    splits_hash: a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe
+
+split_file: churn_temporal.parquet   # (company, cutoff) units; temporal + company-disjoint
+
+cv:
+  folds: 5
+  seed: 42
+
+# Coarse grid on purpose (4 configs). class_weight="balanced" everywhere.
+candidates:
+  - {name: lr_c0.1, algo: lr, C: 0.1}
+  - {name: lr_c1, algo: lr, C: 1.0}
+  - {name: hgb_d3, algo: hgb, max_depth: 3, learning_rate: 0.1, max_iter: 200, max_leaf_nodes: 31}
+  - {name: hgb_l15, algo: hgb, max_depth: null, learning_rate: 0.05, max_iter: 400, max_leaf_nodes: 15}
+
+selection:
+  metric: pr_auc_active            # OOF average precision on active units
+  # Serving min_history: smallest value whose OOF bucket [m, next) has model AP
+  # above the days-since-last rule's AP. Buckets beyond the last grid value are
+  # pooled.
+  min_history_grid: [2, 3, 4, 6]
+  # Validation check (pre-registered): if the CV winner's val PR-AUC is below the
+  # best LR's by more than the 95% company-bootstrap half-width, use the LR.
+  val_check_bootstrap: 1000
+  rule_silence_days: 60            # serving fallback for short history; not tuned
+
+ci_profile:                        # CI: one LR, no grid
+  candidate: {name: lr_c1, algo: lr, C: 1.0}
+  folds: 3
+
+evaluate:
+  bootstrap: 1000                  # company-cluster bootstrap for 95% CIs
+  top_frac: 0.10                   # precision@top-10% (per statement and global)
+  calibration_bins: 10
+  latency_runs: 3

@@ -1,0 +1,183 @@
+{
+  "algo": "hgb",
+  "artifact_bytes": 303326,
+  "artifact_sha256": "57c3ad3dd6bc613ab154aca716d4131365303614e3bfe621f2ea9412323e8946",
+  "category_source": "cat3-svc_cal-company-8a28bbe2-191ad9",
+  "corpus": {
+    "corpus_dir": "v1",
+    "corpus_hash": "8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1",
+    "corpus_version": "v1",
+    "generator_version": "2.0.0",
+    "pinned": true,
+    "splits_hash": "a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe"
+  },
+  "created_at": "2026-11-02T17:41:39+00:00",
+  "cv": [
+    {
+      "algo": "lr",
+      "name": "lr_c0.1",
+      "pr_auc_active": 0.506371842018992,
+      "pr_auc_all": 0.8332752663046764,
+      "roc_auc_active": 0.8291177688617074,
+      "seconds": 1.1
+    },
+    {
+      "algo": "lr",
+      "name": "lr_c1",
+      "pr_auc_active": 0.5057845450391881,
+      "pr_auc_all": 0.8335813744431455,
+      "roc_auc_active": 0.8289726309648097,
+      "seconds": 0.8
+    },
+    {
+      "algo": "hgb",
+      "name": "hgb_d3",
+      "pr_auc_active": 0.5341397638273996,
+      "pr_auc_all": 0.8513034095422236,
+      "roc_auc_active": 0.839662805793975,
+      "seconds": 13.9
+    },
+    {
+      "algo": "hgb",
+      "name": "hgb_l15",
+      "pr_auc_active": 0.5351562616355825,
+      "pr_auc_all": 0.85125317114853,
+      "roc_auc_active": 0.8379324765817224,
+      "seconds": 18.4
+    }
+  ],
+  "features": [
+    "tenure_days",
+    "n_payments",
+    "gap_mean",
+    "gap_cv",
+    "days_since_last",
+    "recency_ratio",
+    "amount_slope_last3",
+    "amount_last_vs_mean",
+    "revenue_share",
+    "late_ratio",
+    "payments_90d",
+    "company_active_keys",
+    "company_rev_trend"
+  ],
+  "fit_seconds": 4.3,
+  "git_dirty": true,
+  "git_sha": "34f59a82240b9919e2c9196f4f54c1455279b468",
+  "identity": "narration_counterparty_key",
+  "label": "customer makes no payment in (cutoff, cutoff+90d] given >=2 payments before cutoff",
+  "libraries": {
+    "joblib": "1.6.0",
+    "numpy": "2.5.4",
+    "python": "3.12.2",
+    "sklearn": "1.9.1"
+  },
+  "min_history_buckets": [
+    {
+      "bucket": "[2,3)",
+      "model_ap": 0.6531210776224794,
+      "n": 7342,
+      "pos_rate": 0.485698719694906,
+      "rule_ap": 0.5820449176675045
+    },
+    {
+      "bucket": "[3,4)",
+      "model_ap": 0.579886092573524,
+      "n": 5620,
+      "pos_rate": 0.34786476868327404,
+      "rule_ap": 0.47758219138518887
+    },
+    {
+      "bucket": "[4,6)",
+      "model_ap": 0.42689486965906526,
+      "n": 12197,
+      "pos_rate": 0.1781585635812085,
+      "rule_ap": 0.3105282999873696
+    },
+    {
+      "bucket": "[6,inf)",
+      "model_ap": 0.28223531038854144,
+      "n": 32723,
+      "pos_rate": 0.0742291354704642,
+      "rule_ap": 0.220337050076635
+    }
+  ],
+  "model_version": "churn1-hgb_l15-8a28bbe2-2023be",
+  "name": "churn",
+  "params": {
+    "band_medium": 0.1749,
+    "candidate": "hgb_l15",
+    "categoriser": "cat3-svc_cal-company-8a28bbe2-191ad9",
+    "decision_threshold": 0.275,
+    "feature_version": "1",
+    "folds": 5,
+    "min_history_payments": 2,
+    "oof_f1_at_threshold": 0.5622757338636462,
+    "profile": "full",
+    "rule_silence_days": 60,
+    "seed": 42
+  },
+  "selected": {
+    "band_medium": 0.1749,
+    "candidate": "hgb_l15",
+    "decision_threshold": 0.275,
+    "min_history_payments": 2,
+    "oof_f1_at_threshold": 0.5622757338636462,
+    "rule_silence_days": 60
+  },
+  "sizes": {
+    "test": {
+      "active_units": 4133,
+      "companies": 34,
+      "company_cutoffs": 205,
+      "pos_rate": 0.38131962296486716,
+      "pos_rate_active": 0.1860633922090491,
+      "units": 5835
+    },
+    "train": {
+      "active_units": 57882,
+      "companies": 442,
+      "company_cutoffs": 3239,
+      "pos_rate": 0.325633423180593,
+      "pos_rate_active": 0.1748902940465084,
+      "units": 74200
+    },
+    "val": {
+      "active_units": 1247,
+      "companies": 41,
+      "company_cutoffs": 73,
+      "pos_rate": 0.2971105527638191,
+      "pos_rate_active": 0.13552526062550121,
+      "units": 1592
+    }
+  },
+  "split": "churn_temporal",
+  "synthetic": true,
+  "val_check": {
+    "applied": true,
+    "best_lr": {
+      "hi": 0.6404406599078857,
+      "lo": 0.40868788768131664,
+      "n_boot": 1000,
+      "name": "lr_c0.1",
+      "value": 0.5243445005100658
+    },
+    "diff_win_minus_lr": {
+      "hi": 0.08350096006073604,
+      "lo": -0.007658663637579871,
+      "n_boot": 1000,
+      "value": 0.03528463141933369
+    },
+    "n_companies": 37,
+    "n_units": 1247,
+    "pos_rate": 0.13552526062550121,
+    "switch_to_lr": false,
+    "winner": {
+      "hi": 0.6651034455544055,
+      "lo": 0.44169791823128846,
+      "n_boot": 1000,
+      "name": "hgb_l15",
+      "value": 0.5596291319293994
+    }
+  }
+}

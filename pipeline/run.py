@@ -61,6 +61,7 @@ from schema.canonical import StatementDocument, ValidationStatus
 
 if TYPE_CHECKING:
     from ml.anomaly.infer import AnomalyDetector, AnomalyReport
+    from ml.churn.infer import ChurnScorer
 
 log = logging.getLogger(__name__)
 
@@ -323,8 +324,14 @@ def run_analysis(
                     ctx.update({f"scored_{k}": v for k, v in anomaly_report.scorer_counts.items()})
             stages.append("ml_anomaly")
 
-        with _stage(opts.stage_observer, "customer_analytics"):
-            customer_analytics = CustomerAnalyticsAnalyst().analyse(doc)
+        # Phase 6: churn_risk per active customer only when a churn model resolves;
+        # otherwise the analyst and the stage context are exactly as before.
+        churn_scorer = resolve_churn_scorer()
+        with _stage(opts.stage_observer, "customer_analytics") as ctx:
+            customer_analytics = CustomerAnalyticsAnalyst(churn_scorer=churn_scorer).analyse(doc)
+            if churn_scorer is not None:
+                ctx["churn_model_version"] = churn_scorer.version
+                ctx["churn_scored"] = len(customer_analytics.churn_risk or {})
         stages.append("customer_analytics")
 
         with _stage(opts.stage_observer, "financial_health") as ctx:
@@ -385,6 +392,15 @@ def resolve_anomaly_detector() -> AnomalyDetector | None:
     except ImportError:  # the [ml] extra isn't installed
         return None
     return resolve_detector()
+
+
+def resolve_churn_scorer() -> ChurnScorer | None:
+    """The configured churn scorer, or None (sklearn missing / no model / disabled)."""
+    try:
+        from ml.churn.infer import resolve_scorer
+    except ImportError:  # the [ml] extra isn't installed
+        return None
+    return resolve_scorer()
 
 
 def _narrative(
