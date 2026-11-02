@@ -21,10 +21,13 @@ import json
 import random
 import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, Protocol
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -37,6 +40,54 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 # ─────────────────────────────────────────────────────────────────────────────
 
 MARGIN = 10 * mm
+
+# Version of the generator's corpus-mode behaviour (tools/synthetic_corpus.py).
+# Default-argument output is unchanged from the pre-Phase-3 generator.
+GENERATOR_VERSION = "2.0.0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Corpus-mode hooks (Phase 3). Inert unless corpus_mode() is active: every hook
+# point is guarded by `if _HOOKS is not None`, so default-argument runs execute
+# exactly the original statements and RNG draws.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class CorpusHooksProtocol(Protocol):
+    """What synthetic_gen calls on the hooks object (tools.synthetic_corpus.CorpusHooks)."""
+
+    def customers(self, default: list[tuple[str, str]]) -> list[tuple[str, str]]: ...
+    def customer_payment(
+        self, cid: str, month_idx: int, amount: Decimal, yr: int, mo: int
+    ) -> tuple[Decimal, date] | None: ...
+    def today(self) -> date: ...
+    def uuid_hex(self) -> str: ...
+    def txn_id(self) -> str: ...
+    def narration(self, bank: str, mode: str, party: str, inv: int = 0) -> str: ...
+    def on_txn(self, txn: _Txn) -> None: ...
+    def sort_key(self, t: _Txn) -> Any: ...
+
+
+_HOOKS: CorpusHooksProtocol | None = None   # set only by corpus_mode()
+
+
+@contextmanager
+def corpus_mode(hooks: Any) -> Iterator[Any]:
+    """Activate corpus-mode hooks for the duration of the block. Module-global,
+    so not thread-safe; the corpus builder parallelises with processes."""
+    global _HOOKS
+    prev = _HOOKS
+    _HOOKS = hooks
+    try:
+        yield hooks
+    finally:
+        _HOOKS = prev
+
+
+def _customers(default: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    return _HOOKS.customers(default) if _HOOKS is not None else default
+
+
+def _today() -> date:
+    return _HOOKS.today() if _HOOKS is not None else date.today()
 _BANK_CODES = ["SBIN", "HDFC", "ICIC", "UTIB", "KKBK", "YESB", "PUNB", "BARB", "CITI", "AXIS"]
 
 # Indian FY seasonal revenue multipliers (month → multiplier)
@@ -296,6 +347,10 @@ class _Txn:
     is_related_party: bool = False
     related_party_match: str | None = None
     anomaly_flags: list[str] = field(default_factory=list)
+    # Corpus mode only (never read by _build_truth or the PDF renderers):
+    template_id: str | None = None
+    counterparty_key: str | None = None
+    txn_time: str | None = None
 
 
 @dataclass
@@ -355,6 +410,8 @@ def _ref() -> str:
 
 
 def _hex8() -> str:
+    if _HOOKS is not None:
+        return _HOOKS.uuid_hex()[:8].upper()
     return uuid.uuid4().hex[:8].upper()
 
 
@@ -367,6 +424,8 @@ def _rand_day(year: int, month: int, lo: int = 1, hi: int = 28) -> date:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _narration(bank: str, mode: str, party: str, inv: int = 0) -> str:
+    if _HOOKS is not None:
+        return _HOOKS.narration(bank, mode, party, inv)
     if bank == "hdfc":
         if mode == "credit":
             return f"NEFT/{_bcode()}/{party.upper()}/INV{inv:06d}"
@@ -436,8 +495,8 @@ def _make_txn(
     related_party_match: str | None = None,
     anomaly_flags: list[str] | None = None,
 ) -> _Txn:
-    return _Txn(
-        txn_id=f"txn_{uuid.uuid4().hex[:10]}",
+    txn = _Txn(
+        txn_id=_HOOKS.txn_id() if _HOOKS is not None else f"txn_{uuid.uuid4().hex[:10]}",
         date=txn_date,
         description=desc,
         ref_no=_ref(),
@@ -450,6 +509,9 @@ def _make_txn(
         related_party_match=related_party_match,
         anomaly_flags=anomaly_flags or [],
     )
+    if _HOOKS is not None:
+        _HOOKS.on_txn(txn)
+    return txn
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -545,7 +607,8 @@ def _delayed_date(yr: int, mo: int, delay_days: int) -> date:
 def _gen_healthy_saas(bank: str, company: _Company, start: date, n_months: int) -> list[_Txn]:
     txns: list[_Txn] = []
     inv = 1000
-    base_amounts = {cid: Decimal(str(random.randint(25, 70) * 1000)) for cid, _ in _SAAS_CUSTOMERS}
+    customers = _customers(_SAAS_CUSTOMERS)
+    base_amounts = {cid: Decimal(str(random.randint(25, 70) * 1000)) for cid, _ in customers}
 
     employees = [
         ("Arun Kumar",     Decimal("85000")),
@@ -566,8 +629,9 @@ def _gen_healthy_saas(bank: str, company: _Company, start: date, n_months: int) 
 
     for month_idx, (yr, mo) in enumerate(_months(start, n_months)):
         season = _seasonal(mo)
-        active_count = min(28 + month_idx * 2, len(_SAAS_CUSTOMERS))
-        active_customers = _SAAS_CUSTOMERS[:active_count]
+        active_count = min(28 + month_idx * 2, len(customers))
+        # Corpus mode: every customer is offered; the latent-churn hook decides.
+        active_customers = customers[:active_count] if _HOOKS is None else customers
 
         # Revenue — with 15% chance of payment delay (spills to this month from prev delayed)
         for cid, cname in active_customers:
@@ -580,6 +644,11 @@ def _gen_healthy_saas(bank: str, company: _Company, start: date, n_months: int) 
                 # If spills past month end, keep it within this month
                 if pay_date.month != mo:
                     pay_date = date(yr, mo, 28)
+            if _HOOKS is not None:
+                paid = _HOOKS.customer_payment(cid, month_idx, amt, yr, mo)
+                if paid is None:
+                    continue
+                amt, pay_date = paid
             txns.append(_make_txn(
                 pay_date, _narration(bank, "credit", cname, inv),
                 credit=amt, category="REVENUE", customer_id=cid,
@@ -646,7 +715,8 @@ def _gen_healthy_saas(bank: str, company: _Company, start: date, n_months: int) 
 def _gen_burning_startup(bank: str, company: _Company, start: date, n_months: int) -> list[_Txn]:
     txns: list[_Txn] = []
     inv = 2000
-    base_amounts = {cid: Decimal(str(random.randint(50, 100) * 1000)) for cid, _ in _STARTUP_CUSTOMERS}
+    customers = _customers(_STARTUP_CUSTOMERS)
+    base_amounts = {cid: Decimal(str(random.randint(50, 100) * 1000)) for cid, _ in customers}
 
     employees = [
         ("Ravi Shankar",    Decimal("130000")),
@@ -663,14 +733,22 @@ def _gen_burning_startup(bank: str, company: _Company, start: date, n_months: in
 
     for month_idx, (yr, mo) in enumerate(_months(start, n_months)):
         # Declining customer base (startup losing ground)
-        active_count = max(len(_STARTUP_CUSTOMERS) - month_idx, 5)
-        active_customers = _STARTUP_CUSTOMERS[:active_count]
+        active_count = max(len(customers) - month_idx, 5)
+        active_customers = customers[:active_count] if _HOOKS is None else customers
+        paid_cids: list[str] = []
 
         for cid, cname in active_customers:
             pay_date = _rand_day(yr, mo, 5, 25)
+            amt = base_amounts[cid]
+            if _HOOKS is not None:
+                paid = _HOOKS.customer_payment(cid, month_idx, amt, yr, mo)
+                if paid is None:
+                    continue
+                amt, pay_date = paid
+                paid_cids.append(cid)
             txns.append(_make_txn(
                 pay_date, _narration(bank, "credit", cname, inv),
-                credit=base_amounts[cid], category="REVENUE", customer_id=cid,
+                credit=amt, category="REVENUE", customer_id=cid,
             ))
             inv += 1
 
@@ -707,7 +785,10 @@ def _gen_burning_startup(bank: str, company: _Company, start: date, n_months: in
             ))
 
         # GST
-        rev = sum(base_amounts[c] for c, _ in active_customers)
+        if _HOOKS is not None:
+            rev = sum(base_amounts[c] for c in paid_cids)
+        else:
+            rev = sum(base_amounts[c] for c, _ in active_customers)
         txns.append(_make_txn(
             _rand_day(yr, mo, 20, 28),
             _narration(bank, "gst", ""),
@@ -721,9 +802,10 @@ def _gen_burning_startup(bank: str, company: _Company, start: date, n_months: in
 def _gen_services_firm(bank: str, company: _Company, start: date, n_months: int) -> list[_Txn]:
     txns: list[_Txn] = []
     inv = 3000
+    customers = _customers(_SERVICES_CUSTOMERS)
     base_amounts = {
         cid: Decimal(str(random.randint(150, 1200) * 10000))
-        for cid, _ in _SERVICES_CUSTOMERS
+        for cid, _ in customers
     }
     employees = [
         ("Kavita Sharma",   Decimal("155000")),
@@ -734,9 +816,11 @@ def _gen_services_firm(bank: str, company: _Company, start: date, n_months: int)
     ]
     salary_base = {emp: sal for emp, sal in employees}
 
-    for (yr, mo) in _months(start, n_months):
-        # Lumpy payments — 4-10 clients pay, each with possible 30-day delay
-        paying = random.sample(_SERVICES_CUSTOMERS, random.randint(4, 10))
+    for month_idx, (yr, mo) in enumerate(_months(start, n_months)):
+        # Lumpy payments — 4-10 clients pay, each with possible 30-day delay.
+        # Corpus mode: every client is offered; the latent-churn hook decides.
+        paying = random.sample(customers, random.randint(4, 10)) if _HOOKS is None else customers
+        paid_cids: list[str] = []
         for cid, cname in paying:
             delay = random.randint(10, 35) if random.random() < 0.30 else 0  # 30% of clients pay late
             pay_date = _rand_day(yr, mo, 5, 28)
@@ -744,14 +828,21 @@ def _gen_services_firm(bank: str, company: _Company, start: date, n_months: int)
                 pay_date += timedelta(days=delay)
                 if pay_date.month != mo:
                     pay_date = date(yr, mo, 28)
+            amt = base_amounts[cid]
+            if _HOOKS is not None:
+                paid = _HOOKS.customer_payment(cid, month_idx, amt, yr, mo)
+                if paid is None:
+                    continue
+                amt, pay_date = paid
+                paid_cids.append(cid)
             txns.append(_make_txn(
                 pay_date, _narration(bank, "credit", cname, inv),
-                credit=base_amounts[cid], category="REVENUE", customer_id=cid,
+                credit=amt, category="REVENUE", customer_id=cid,
             ))
             inv += 1
 
         for emp, base_sal in list(salary_base.items()):
-            sal = _april_hike(base_sal, mo, sum(1 for m in _months(date.today(), 12) if m == (yr, mo)))
+            sal = _april_hike(base_sal, mo, sum(1 for m in _months(_today(), 12) if m == (yr, mo)))
             salary_base[emp] = sal
             txns.append(_make_txn(
                 date(yr, mo, 2),
@@ -771,7 +862,10 @@ def _gen_services_firm(bank: str, company: _Company, start: date, n_months: int)
         ))
 
         # GST on billed amount
-        billed = sum(base_amounts[cid] for cid, _ in paying)
+        if _HOOKS is not None:
+            billed = sum(base_amounts[c] for c in paid_cids)
+        else:
+            billed = sum(base_amounts[cid] for cid, _ in paying)
         txns.append(_make_txn(
             _rand_day(yr, mo, 20, 28),
             _narration(bank, "gst", ""),
@@ -1365,7 +1459,10 @@ _GENERATORS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _compute_balances(txns: list[_Txn], opening: Decimal) -> list[_Txn]:
-    txns.sort(key=lambda t: t.date)
+    if _HOOKS is not None:
+        txns.sort(key=_HOOKS.sort_key)   # seeded within-day order: time, then opaque id
+    else:
+        txns.sort(key=lambda t: t.date)
     bal = opening
     for t in txns:
         if t.credit is not None:

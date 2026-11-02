@@ -18,6 +18,7 @@ env/
 data/synthetic/**
 data/real_anonymised/**
 data/gold/**
+data/corpus/
 !data/synthetic/.gitkeep
 !data/real_anonymised/.gitkeep
 !data/gold/.gitkeep

@@ -14,15 +14,15 @@ PY := $(VENV_BIN)/python
 
 # Packages gated by mypy in CI (must be clean). Widen as errors are fixed;
 # see docs/CHANGELOG_UPGRADE.md for the current remaining scope.
-TYPECHECK_GATED := schema/ pipeline/ config/ llm/ db/ api/ worker/
-TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ db/ api/ worker/ analysis/ adapters/ reports/ tools/ jurisdictions/
+TYPECHECK_GATED := schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/
+TYPECHECK_ALL   := schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
-.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker
+.PHONY: install gold test lint typecheck typecheck-all regression all demo migrate api worker corpus corpus-small
 
 install:
 	$(BOOTSTRAP_PY) -m venv $(VENV)
 	$(PY) -m pip install --upgrade pip
-	$(PY) -m pip install -e ".[dev,ocr,embeddings,platform]"
+	$(PY) -m pip install -e ".[dev,ocr,embeddings,platform,ml]"
 
 gold:
 	$(PY) -m scripts.build_gold_set
@@ -57,3 +57,12 @@ api:
 
 worker:
 	$(PY) -m worker
+
+# ── Synthetic corpus (Phase 3). SYNTHETIC data; see docs/ml/corpus_card.md.
+corpus:
+	$(PY) -m datasets.build_corpus --n-companies 1000 --seed 42
+	$(PY) -m datasets.splits data/corpus/v1 --seed 42
+
+corpus-small:
+	$(PY) -m datasets.build_corpus --small --seed 42
+	$(PY) -m datasets.splits data/corpus/v1-small --seed 42

@@ -50,7 +50,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -e ".[dev,ocr,embeddings,platform]"
+          .venv/bin/python -m pip install -e ".[dev,ocr,embeddings,platform,ml]"
 
       - name: Lint
         run: .venv/bin/python -m ruff check .
@@ -58,15 +58,21 @@ jobs:
       # Gated scope: must be clean. Widen as packages are fixed (see
       # docs/CHANGELOG_UPGRADE.md for the remaining scope).
       - name: Type check (gated)
-        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/
+        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/
 
       # Informational only — visible in logs, does not fail the build.
       - name: Type check (full scope, informational)
         continue-on-error: true
-        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ db/ api/ worker/ analysis/ adapters/ reports/ tools/ jurisdictions/
+        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
       - name: Build synthetic gold set
         run: .venv/bin/python -m scripts.build_gold_set
+
+      # Phase 3: small synthetic corpus + split files (exercises the builder end to end).
+      - name: Build small corpus and splits
+        run: |
+          .venv/bin/python -m datasets.build_corpus --small --seed 42
+          .venv/bin/python -m datasets.splits data/corpus/v1-small --seed 42
 
       - name: Test
         run: .venv/bin/python -m pytest tests/ -q --ignore=tests/regression --tb=short

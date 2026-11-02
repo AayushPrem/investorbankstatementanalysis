@@ -409,3 +409,113 @@ Branched from `new_improvements` at fddaf16. This phase adds a PostgreSQL system
 - **The categorisation review queue is `source in (default, llm)`.** On the gold set every row is rule-categorised (the rule list ends in catch-alls), so the queue is empty there. Phase 4's confidence routing is what will populate it.
 - **Streamlit still calls `run_analysis` locally**, not the API (deferred).
 - The pre-existing flaky tests from Phase 1 are unchanged. `test_vc_lens::test_generate_is_idempotent` failed once in the clean baseline run and passed in the final run.
+
+---
+
+## Phase 3: Synthetic corpus at scale (`upgrade/p3-corpus`, 2026-11-02)
+
+This phase adds a reproducible 1,000-company synthetic corpus (Parquet), with labels stored apart from features, latent-health churn, `ml_only` anomalies and leakage-safe split files. `tools/synthetic_gen.py` was extended through opt-in hooks, not rewritten. Default-argument output is byte-identical to before (see "Verified"). All data is **synthetic** (generator v2.0.0, corpus v1). See `docs/ml/corpus_card.md`.
+
+A separate housekeeping commit on this branch updates the Phase 2 entry: the Postgres tests passed in CI run 41434153131 (commit 37dd801).
+
+### What changed
+
+- **Generator hooks (`tools/synthetic_gen.py`, +~120 lines).**
+  - There is one module-level `_HOOKS` (typed by `CorpusHooksProtocol`), set only inside `corpus_mode(hooks)`. Every hook point is `if _HOOKS is not None`, so default runs execute the same statements and RNG draws as before.
+  - The hook points:
+    - `_make_txn`: seeded txn_id; adds `template_id`, `counterparty_key`, `txn_time`
+    - `_narration`
+    - `_hex8`
+    - `_customers()` in the three B2B generators
+    - a `customer_payment()` call in their revenue loops
+    - `_today()`, which replaces the one `date.today()` call (fixes the Phase 0 latent-determinism note)
+    - the within-day sort key in `_compute_balances`
+  - The three new `_Txn` fields default to `None` and aren't read by `_build_truth` or the renderers.
+  - New constant: `GENERATOR_VERSION = "2.0.0"`.
+- **Corpus mode (`tools/synthetic_corpus.py`, new).** Provides `CorpusHooks`, `make_spec` and `generate_company` (in memory, with an optional PDF + truth JSON under `rl_config.invariant`). It adds:
+  - **Per-company parameters:** profile mix, bank, 12–24 months, start 2022-04..2024-12, `revenue_scale ~ LogNormal(0, 0.5)` (applied as a roundness-preserving post-pass), B2B customer count log-uniform from 5 (max 200 saas / 80 startup / 40 services). Names for the company, founder, customers, vendors (12 pools) and employees are drawn per company.
+  - **Narration diversity:** 95 templates over 8 rails, random UTR/ref/VPA, merchant-name variants, about 5% casing and about 5% spacing noise, truncation at 60 (HDFC) / 80 (ICICI) characters. `template_id` goes to labels.
+  - **Latent-health churn,** exactly as approved in plan mode:
+    - `λ = sigmoid(a_p − 1.0·health − 0.35·ln(1+tenure) + N(0, 0.5²))`, with `a_p` = −3.0 / −2.6 / −2.2
+    - 55% of churners are signallers with a 1–3 month lead window
+    - late payment / downgrade / skip base rates apply to everyone
+    - the legacy `customer_churn` injector is excluded in corpus mode
+  - **Three `ml_only` injectors** (`ml_vendor_amount_outlier`, `ml_first_time_large_counterparty`, `ml_off_hours_burst`, p = 0.15 each), with rule-evasion guards. They live in `ML_ONLY_INJECTORS`, not `_FLAG_INJECTORS`.
+  - **Two changes from the approved plan:**
+    1. **Spike guard.** The plan capped each amount so the month's net moves < 0.5σ. On a 300-company sample that cap blocked `ml_first_time_large_counterparty` in 52% of selected companies, mostly stable-cashflow ones, which would have skewed the anomaly toward volatile profiles. It is replaced by the direct check the cap stood for: the set of spike_drain-flagged months must be unchanged, the touched month must not have been flagged before, and its leave-one-out |z| must stay ≤ 2.0 (the rule fires at 2.5). Injection success on that sample went from 48% to 86% (first-time), 82% to 95% (vendor outlier) and stayed at 100% (off-hours).
+    2. **Constant injector names.** The legacy injectors' constant counterparty names (concentration whale, round-trip advisory firm, GST-gap revenue party, cash-loan lender) are remapped per company in corpus mode. Otherwise the names would label the anomaly.
+- **`datasets/` (new package, mypy-gated):**
+  - `schema.py`: feature vs label Parquet schemas, `JOIN_KEYS`, `FORBIDDEN_FEATURE_TOKENS`.
+  - `build_corpus.py`:
+    - `--n-companies`, `--seed`, `--small` (50 companies, ≤ 12 months, 5 PDFs → `data/corpus/v1-small`), `--workers`, `--pdf-subset`, `--no-ml-only`, `--out`
+    - Each company is generated from its own derived seed, in process-pool chunks merged in order.
+    - Output is staged and then swapped in. It refuses to delete a directory without a corpus `manifest.json`.
+    - The manifest has no timestamps and a combined `corpus_hash`.
+  - `splits.py`:
+    - one shared company partition (70/15/15)
+    - cross-bank (HDFC → ICICI)
+    - unseen-vendor by counterparty key (generic keys always train)
+    - temporal churn (company, cutoff) with calendar thresholds T1 < T2
+    - segmentation holdout (20%)
+  - `duckdb_stats.py`: feature-only views by default (labels under `label_`), the corpus-card stats, a precursor-visibility query and a DuckDB-vs-pandas benchmark.
+- **Packaging / CI / Makefile:**
+  - New `[ml]` extra (`pyarrow`, `duckdb`, `scikit-learn`); `datasets*` added to package discovery.
+  - `data/corpus/` gitignored.
+  - CI installs `[ml]`, builds `--small` and its splits, and gates mypy on `datasets/`.
+  - New Makefile targets `corpus` and `corpus-small`.
+  - ADR `docs/adr/0003-parquet-duckdb-corpus.md`.
+- **Docs:** `docs/ml/corpus_card.md`, with every number from the 1,000-company run below.
+
+### Files
+
+- **Added:** `tools/synthetic_corpus.py`, `datasets/__init__.py`, `datasets/schema.py`, `datasets/build_corpus.py`, `datasets/splits.py`, `datasets/duckdb_stats.py`, `tests/test_synthetic_gen_hooks.py`, `tests/test_corpus.py`, `tests/test_splits.py`, `docs/ml/corpus_card.md`, `docs/adr/0003-parquet-duckdb-corpus.md`
+- **Modified:** `tools/synthetic_gen.py`, `pyproject.toml`, `Makefile`, `.github/workflows/ci.yml`, `.gitignore`, `docs/CHANGELOG_UPGRADE.md`
+- **Removed:** none
+
+### Verified (run in this session, Windows 11, Python 3.12.2, pyarrow 26.0.0, DuckDB 2.0.0, scikit-learn 1.9.1)
+
+| Check | Before (37dd801 + changelog fix) | After |
+|---|---|---|
+| `pytest tests/ -q --ignore=tests/regression` | 1083 passed, 5 skipped | **1123 passed, 5 skipped** (+40 new) |
+| `pytest tests/regression` | 7 passed, 1 xfailed, 1 xpassed | 7 passed, 1 xfailed, 1 xpassed |
+| Extraction / Categorisation | 100.0% / 99.9% | 100.0% / 99.9% |
+| Risk recall / Compliance recall | 88.5% (n=13) / 90.0% (n=10) | 88.5% (n=13) / 90.0% (n=10) |
+| Customer ID acc. | 66.6% (pairs=176521) | 66.6% (pairs=176521) |
+| Gold set (`build_gold_set --force`), sha256 of 44 files | baseline | **identical** |
+| 60-case generator fingerprint (5 profiles × 2 banks × clean/realistic/manual, every injector, PDF + truth) | `792734698b48…71b5` | **identical** |
+
+- `results/sprint1/gold_regression.json` before vs after: **the only differing key is `/timestamp`**.
+- Default-path identity was re-checked after the last code edit (type-only): fingerprint and gold set identical again.
+- `tests/test_synthetic_gen_hooks.py` pins the truth-JSON hashes of 10 default-argument cases. They were produced by the **pre-change** generator (`git show 37dd801:tools/synthetic_gen.py`, swapped in temporarily) and match the hooked generator.
+- **Acceptance (same hash twice):** `python -m datasets.build_corpus --n-companies 1000 --seed 42`, run twice with 4 workers and once with 1 worker (to a scratch dir): `corpus_hash e086b173e6422d3e5c4d02ce27f543d653e50fc09d7445286f520efef8e5cf30` every time. The two in-place manifests are byte-identical. It was rebuilt twice more after the final edit with the same hash. 617,483 transactions, 23,233 customers, 1,710 flags, 30 PDFs; 26.8 s with 4 workers, 67.0 s with 1.
+- `python -m datasets.splits data/corpus/v1 --seed 42` run twice: `splits_hash a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe` both times.
+- **Label isolation:** `tests/test_corpus.py` asserts that:
+  - feature ∩ label columns ⊆ {txn_id, company_id, bank}
+  - no feature column name contains a label token
+  - the DuckDB feature views expose no label column
+  - txn_ids are opaque
+  - narrations contain no label words or legacy constant names
+  - The column-overlap test caught a real collision during development (`labels/flags.description` vs the feature `description`), now renamed to `flag_description`.
+- **ml_only vs rules:**
+  - On 12 generated companies, the six real `analysis/risk.py` detectors never include an ml_only row in a flag.
+  - Removing ml_only injections leaves every other row identical.
+  - ml_only amounts are non-round, non-cash debits; burst times fall between 01:00 and 04:30.
+- **Ingestion:** all 30 rendered PDFs went through `pipeline.run.run_analysis` (scratch script). 30/30 passed validation with row counts equal to the feature table; one is also covered by a test.
+- **Corpus stats** (from `python -m datasets.duckdb_stats data/corpus/v1 --bench`):
+  - churn in period: 30.3% saas / 39.3% services / 49.5% startup
+  - churn by health band: 74.2% (< −1) to 9.3% (≥ 1)
+  - precursor visibility, churners' last 90 days vs non-churners: 27.1% vs 17.2% gaps > 45 days, 29.0% vs 22.1% amount drops > 5%
+  - DuckDB 0.52 s vs pandas 1.05 s on the benchmark aggregation
+- `ruff check .`: clean. `mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/`: `Success: no issues found in 46 source files`.
+- Informational mypy on `tools/synthetic_gen.py`: 38 errors before and 38 after. `tools/synthetic_corpus.py` has 2, both calls into pre-existing untyped generator functions.
+- **Security:** manual review (the `/security-review` skill can't run here, no merge base with `origin/HEAD`). Covered: deletion safety of the output swap, SQL built from paths (CLI-only, quotes escaped), no new logging of narrations or amounts, no network or secrets. No findings.
+
+### Not verified / known gaps
+
+- **CI has not run this branch yet** (pushed at the end of the session). The `--small` CI step and the `[ml]` install on Linux are "implemented, not run" until it does. The hash is only claimed for this machine's pyarrow 26.0.0; Linux with the same pyarrow is expected to match but wasn't checked.
+- **Class balance is skewed by the profiles:** REVENUE 55.2%, and **LOAN_OUT has 0 rows**. Phase 4 can't evaluate LOAN_OUT.
+- **6.9% of rows are inline narrations that aren't diversified:** restaurant Swiggy/Zomato UPI, legacy cash/FX/self-transfer injectors.
+- **`ml_first_time_large_counterparty` lands in 143 of the 174 companies selected; `ml_vendor_amount_outlier` in 132 of 140.** In the rest, the guard can't be met in 10 tries.
+- **The churn temporal val split is small** (82 units vs 3,610 train / 232 test), because a val company's statement has to span T1..T2.
+- **Churn is produced by the same latent model the card describes.** A churn model trained here recovers the simulator, not real behaviour.
+- `make corpus` / `make corpus-small` were not run through make (only the underlying commands).
