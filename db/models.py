@@ -55,7 +55,7 @@ Money = Numeric(18, 2, asdecimal=True)
 JOB_STATUSES = ("queued", "running", "succeeded", "failed")
 RUN_STATUSES = ("running", "succeeded", "failed")
 DOCUMENT_STATUSES = ("received", "processing", "processed", "failed")
-CATEGORY_SOURCES = ("rule", "ml", "llm", "default", "manual")
+CATEGORY_SOURCES = ("rule", "ml", "llm", "review", "default", "manual")  # review: Phase 4, migration 0002
 RAILS = ("UPI", "NEFT", "IMPS", "RTGS", "CHQ", "CASH", "CARD", "OTHER")
 OUTPUT_KINDS = (
     "metrics", "customer_analytics", "financial_health", "compliance",

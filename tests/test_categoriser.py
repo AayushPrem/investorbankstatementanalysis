@@ -236,19 +236,41 @@ class TestAllCategorised:
         doc = Normaliser().normalise(DigitalPDFAdapter().extract(pdf))
         _, stats = Categoriser(llm_enabled=False).categorise(doc)
         assert stats.total == len(doc.transactions)
-        assert stats.rule_matched + stats.llm_matched + stats.fallback_other == stats.total
+        # Phase 4: v3 adds the ml and review routing sources to the invariant.
+        assert (stats.rule_matched + stats.ml_matched + stats.llm_matched + stats.review
+                + stats.fallback_other) == stats.total
 
     def test_rule_match_rate_is_high(self, tmp_root: Path) -> None:
-        """Rule layer should match ≥90% of synthetic statements without LLM."""
+        """v2 fallback path (no model): rule layer matches ≥90% without LLM.
+
+        Phase 4: pinned to model=None. Under v3 the direction catch-alls are no
+        longer "rules" (rule audit, docs/ml/categoriser.md), so the rule rate
+        drops by design; v3 coverage is tested below.
+        """
         pdf, _ = generate_statement(
             bank="hdfc", profile="healthy_saas", output_dir=tmp_root,
             statement_id="cat_rate_test", flags=[], seed=9,
         )
         doc = Normaliser().normalise(DigitalPDFAdapter().extract(pdf))
-        _, stats = Categoriser(llm_enabled=False).categorise(doc)
+        _, stats = Categoriser(llm_enabled=False, model=None).categorise(doc)
         assert stats.rule_match_rate >= 0.90, (
             f"Rule match rate {stats.rule_match_rate:.1%} < 90%"
         )
+
+    def test_v3_deterministic_coverage_is_high(self, tmp_root: Path) -> None:
+        """v3 with the configured model: rule + ml (not review) covers ≥90%, no LLM."""
+        from ml.categoriser.infer import resolve_model
+        model = resolve_model()
+        if model is None:
+            pytest.skip("no categoriser model configured/trained (models/categoriser/)")
+        pdf, _ = generate_statement(
+            bank="hdfc", profile="healthy_saas", output_dir=tmp_root,
+            statement_id="cat_cov_test", flags=[], seed=9,
+        )
+        doc = Normaliser().normalise(DigitalPDFAdapter().extract(pdf))
+        _, stats = Categoriser(llm_enabled=False, model=model).categorise(doc)
+        coverage = (stats.rule_matched + stats.ml_matched) / stats.total
+        assert coverage >= 0.90, f"deterministic coverage {coverage:.1%} < 90%"
 
 
 # ─── accuracy against ground truth ───────────────────────────────────────────
@@ -360,7 +382,9 @@ class TestLLMPlumbing:
         )
 
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            cat = Categoriser(llm_enabled=True)
+            # Phase 4: model=None pins the v2 path this test exercises (v3 LLM
+            # routing is covered in tests/test_categoriser_routing.py).
+            cat = Categoriser(llm_enabled=True, model=None)
             # Force the rule layer to return None so the LLM layer is exercised
             with patch("analysis.categoriser._rule_classify", return_value=None):
                 with patch.object(
@@ -390,7 +414,7 @@ class TestLLMPlumbing:
         )
 
         with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
-            cat = Categoriser(llm_enabled=True)
+            cat = Categoriser(llm_enabled=True, model=None)  # Phase 4: pin v2 path
             # Force rule layer to return None, then make the LLM batch blow up
             with patch("analysis.categoriser._rule_classify", return_value=None):
                 with patch.object(cat, "_llm_categorise_batch", side_effect=RuntimeError("API timeout")):

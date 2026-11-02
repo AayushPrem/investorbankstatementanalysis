@@ -28,6 +28,11 @@ data/corpus/
 results/**
 !results/.gitkeep
 
+# Model artifacts (Phase 4, ml/registry.py): binaries ignored, metadata committed
+models/**
+!models/**/
+!models/**/metadata.json
+
 # Pipeline state and cache
 .pipeline_state/**
 !.pipeline_state/.gitkeep

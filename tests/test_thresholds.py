@@ -96,6 +96,17 @@ def test_categoriser_batch_size_unchanged() -> None:
     _same(Categoriser.BATCH_SIZE, 50)
 
 
+def test_categoriser_v3_routing_thresholds_pinned() -> None:
+    """Phase 4: written by `ml.categoriser.evaluate --write-thresholds` (company-split
+    validation τ, raised to the policy floor 0.90 / 0.50). Change only with a retrain."""
+    c = get_thresholds().categoriser
+    _same(c.model_version, "cat3-svc_cal-company-8a28bbe2-191ad9")
+    _same(c.tau_accept, 0.90)
+    _same(c.tau_review, 0.50)
+    _same(c.high_precision_rules, (0, 1, 4, 5, 8, 9, 10))
+    assert 0.0 <= c.tau_review <= c.tau_accept <= 1.0
+
+
 def test_formerly_inline_literals() -> None:
     t = get_thresholds()
     _same(t.health.sustained_decline_months, 3)

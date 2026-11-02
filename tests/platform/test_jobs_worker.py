@@ -64,7 +64,7 @@ def test_gold_pdf_end_to_end(factory: sessionmaker[Session], settings: Settings,
     with factory() as s:
         run = s.get(Run, job.run_id)
         assert run is not None and run.status == "succeeded" and run.statement_id is not None
-        assert run.agent_versions["categoriser"] == "2.0.0"
+        assert run.agent_versions["categoriser"] == "3.0.0"  # Phase 4 bump (v3 routing)
         stages = list(s.scalars(select(StageExecution.stage).where(StageExecution.run_id == run.id)
                                 .order_by(StageExecution.created_at, StageExecution.id)))
         assert stages == ALL_STAGES + ["render_reports"]

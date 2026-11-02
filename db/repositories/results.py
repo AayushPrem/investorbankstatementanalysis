@@ -123,6 +123,7 @@ def persist_statement(
     dq_report: DQReport | None,
     company_name: str | None = None,
     opening_balance: Decimal | None = None,
+    categoriser_model_version: str | None = None,
 ) -> tuple[Statement, dict[str, uuid.UUID]]:
     """Insert statement + transactions (+ DQ report). Returns the statement and
     a map from the pipeline's transaction_id to the DB uuid."""
@@ -165,7 +166,7 @@ def persist_statement(
         session.add(row)
         id_map[t.transaction_id] = row.id
         if t.category is not None:
-            session.add(_categorisation(row.id, t))
+            session.add(_categorisation(row.id, t, categoriser_model_version))
 
     if dq_report is not None:
         session.add(DQReportRow(
@@ -184,21 +185,33 @@ def _dq_check_with_uuids(check: dict[str, Any], id_map: dict[str, uuid.UUID]) ->
     return check
 
 
-def _categorisation(txn_uuid: uuid.UUID, t: CanonicalTransaction) -> Categorisation:
+def _categorisation(
+    txn_uuid: uuid.UUID, t: CanonicalTransaction, ml_model_version: str | None = None,
+) -> Categorisation:
+    """One current categorisation row. ``model_version`` is the ML model for
+    rows routed through it (ml / llm / review), else the categoriser version."""
     assert t.category is not None
     hit = match_rule(t)
-    if hit is not None and hit[1] == t.category:
-        source, rule_id = "rule", f"rule_{hit[0]}"
-    elif t.category == TransactionCategory.OTHER:
-        source, rule_id = "default", None
-    else:
-        source, rule_id = "llm", None
+    source = t.category_source
+    if source is None:  # categorised outside Categoriser v3: derive as before
+        if hit is not None and hit[1] == t.category:
+            source = "rule"
+        elif t.category == TransactionCategory.OTHER:
+            source = "default"
+        else:
+            source = "llm"
+    rule_id = f"rule_{hit[0]}" if source == "rule" and hit is not None else None
+    conf = t.category_confidence
     return Categorisation(
         transaction_id=txn_uuid,
         category=str(t.category),
         source=source,
+        confidence=None if conf is None else min(max(float(conf), 0.0), 1.0),
         rule_id=rule_id,
-        model_version=AGENT_VERSIONS.get("categoriser"),
+        model_version=(
+            ml_model_version if ml_model_version and source in ("ml", "llm", "review")
+            else AGENT_VERSIONS.get("categoriser")
+        ),
         is_current=True,
     )
 

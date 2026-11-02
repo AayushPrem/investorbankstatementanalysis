@@ -1,0 +1,98 @@
+{
+  "algo": "lr",
+  "artifact_bytes": 1161155,
+  "artifact_sha256": "59e629d875424e959cefa7906e36051ec27e07808b3771ab541ad18c393acf78",
+  "classes": [
+    "FEES",
+    "FOUNDER_WITHDRAWAL",
+    "LOAN_IN",
+    "OTHER",
+    "REVENUE",
+    "SALARY",
+    "TAX",
+    "TRANSFER",
+    "VENDOR_PAYMENT"
+  ],
+  "corpus": {
+    "corpus_dir": "v1",
+    "corpus_hash": "8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1",
+    "corpus_version": "v1",
+    "generator_version": "2.0.0",
+    "pinned": true,
+    "splits_hash": "a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe"
+  },
+  "created_at": "2026-11-02T14:55:16+00:00",
+  "git_sha": "0f59c80b04d0a1fbfc6bed9d576100653600aec2",
+  "libraries": {
+    "joblib": "1.6.0",
+    "numpy": "2.5.4",
+    "python": "3.12.2",
+    "sklearn": "1.9.1"
+  },
+  "metrics": {
+    "test": {
+      "accuracy": 0.9998927234302756,
+      "macro_f1": 0.9674742344797129,
+      "macro_over": [
+        "REVENUE",
+        "VENDOR_PAYMENT",
+        "SALARY",
+        "LOAN_IN",
+        "TAX",
+        "TRANSFER",
+        "FOUNDER_WITHDRAWAL",
+        "FEES",
+        "OTHER"
+      ],
+      "macro_precision": 0.9480687249617605,
+      "macro_recall": 0.9999505626819675,
+      "n": 93217,
+      "not_evaluable": [
+        "LOAN_OUT"
+      ]
+    },
+    "val": {
+      "accuracy": 0.9997522859696927,
+      "macro_f1": 0.9575937403912084,
+      "macro_over": [
+        "REVENUE",
+        "VENDOR_PAYMENT",
+        "SALARY",
+        "LOAN_IN",
+        "TAX",
+        "TRANSFER",
+        "FOUNDER_WITHDRAWAL",
+        "FEES",
+        "OTHER"
+      ],
+      "macro_precision": 0.9365640775757608,
+      "macro_recall": 0.9998963674983822,
+      "n": 92849,
+      "not_evaluable": [
+        "LOAN_OUT"
+      ]
+    }
+  },
+  "model_version": "cat3-lr-company-8a28bbe2-ade2ae",
+  "n_test": 93217,
+  "n_train": 431417,
+  "n_val": 92849,
+  "name": "categoriser",
+  "params": {
+    "C": 10.0,
+    "algo": "lr",
+    "class_weight": "balanced",
+    "feature_version": "1",
+    "features": {
+      "char_max_features": 200000,
+      "min_df": 2,
+      "word_max_features": 50000
+    },
+    "max_iter": 300,
+    "max_rows_per_class": null,
+    "seed": 42
+  },
+  "selected_on_val": false,
+  "split": "company",
+  "synthetic": "generator v2.0.0, corpus v1"
+}

@@ -85,3 +85,15 @@ related_party:                        # pipeline/related_party.py
 
 categoriser:                          # analysis/categoriser.py
   llm_batch_size: 50
+  # Phase 4 v3 routing: rule -> ML >= tau_accept -> LLM(top-3) -> review.
+  # Written by `python -m ml.categoriser.evaluate ... --write-thresholds` from
+  # the company-split VALIDATION curve (docs/ml/categoriser.md). If the model
+  # is not in models/categoriser/, the categoriser falls back to v2 rules.
+  model_version: "cat3-svc_cal-company-8a28bbe2-191ad9"
+  tau_accept: 0.90
+  tau_review: 0.50
+  # From `python -m ml.categoriser.rule_audit data/corpus/v1` (company train+val,
+  # precision >= 0.99, support >= 50, not template-concentrated). Excluded:
+  # 2,6 (0 support), 3 personal_suffix (generator-fitted), 7 self_transfer
+  # (precision 0.0), 11-13 generic fallbacks. See docs/ml/categoriser.md.
+  high_precision_rules: [0, 1, 4, 5, 8, 9, 10]

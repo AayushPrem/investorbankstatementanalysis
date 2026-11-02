@@ -58,12 +58,12 @@ jobs:
       # Gated scope: must be clean. Widen as packages are fixed (see
       # docs/CHANGELOG_UPGRADE.md for the remaining scope).
       - name: Type check (gated)
-        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/
+        run: .venv/bin/python -m mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/
 
       # Informational only — visible in logs, does not fail the build.
       - name: Type check (full scope, informational)
         continue-on-error: true
-        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ analysis/ adapters/ reports/ tools/ jurisdictions/
+        run: .venv/bin/python -m mypy schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/ analysis/ adapters/ reports/ tools/ jurisdictions/
 
       - name: Build synthetic gold set
         run: .venv/bin/python -m scripts.build_gold_set
@@ -73,6 +73,13 @@ jobs:
         run: |
           .venv/bin/python -m datasets.build_corpus --small --seed 42
           .venv/bin/python -m datasets.splits data/corpus/v1-small --seed 42
+
+      # Phase 4: train a small categoriser on v1-small so the suite and the gold
+      # regression run the v3 hybrid path (the full-corpus model isn't committed).
+      - name: Train CI categoriser model (v1-small)
+        run: |
+          .venv/bin/python -m ml.categoriser.train data/corpus/v1-small --profile ci --allow-unpinned | tee train_ci.txt
+          grep '^CATEGORISER_MODEL_VERSION=' train_ci.txt >> "$GITHUB_ENV"
 
       - name: Test
         run: .venv/bin/python -m pytest tests/ -q --ignore=tests/regression --tb=short

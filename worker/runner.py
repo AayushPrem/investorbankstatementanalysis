@@ -159,6 +159,7 @@ class Worker:
                     validation_status=str(analysis.validation_report.status),
                     dq_report=analysis.dq_report,
                     company_name=analysis.company_name,
+                    categoriser_model_version=analysis.categorisation_stats.model_version,
                 )
                 run = s.get(Run, run_id)
                 assert run is not None

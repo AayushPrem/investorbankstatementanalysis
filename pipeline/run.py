@@ -274,8 +274,11 @@ def run_analysis(
         with _stage(opts.stage_observer, "categorise") as ctx:
             doc, cat_stats = Categoriser(llm_enabled=llm_enabled).categorise(doc)
             ctx["rule"] = cat_stats.rule_matched
+            ctx["ml"] = cat_stats.ml_matched
             ctx["llm"] = cat_stats.llm_matched
+            ctx["review"] = cat_stats.review
             ctx["other"] = cat_stats.fallback_other
+            ctx["model_version"] = cat_stats.model_version
         stages.append("categorise")
 
         with _stage(opts.stage_observer, "financial_analysis"):

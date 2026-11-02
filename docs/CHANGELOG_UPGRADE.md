@@ -527,3 +527,169 @@ A separate housekeeping commit on this branch updates the Phase 2 entry: the Pos
 - **The churn temporal val split is small** (82 units vs 3,610 train / 232 test), because a val company's statement has to span T1..T2.
 - **Churn is produced by the same latent model the card describes.** A churn model trained here recovers the simulator, not real behaviour.
 - `make corpus` / `make corpus-small` were not run through make (only the underlying commands).
+
+---
+
+## Phase 4: Hybrid categoriser (`upgrade/p4-categoriser-ml`, 2026-11-02)
+
+This phase adds a supervised categoriser and confidence routing: high-precision rule → ML ≥ τ_accept → LLM (picking from the ML top-3) → review queue. It also adds a rule precision audit (D10) and an evaluation on the three leakage-safe Phase 3 splits. All metrics are on **synthetic data** (generator v2.0.0, corpus v1); see `docs/ml/categoriser.md`. `categoriser` is bumped to **3.0.0** in `AGENT_VERSIONS`.
+
+### What changed
+
+- **Routing (`analysis/categoriser.py` v3).**
+  - Steps:
+    1. A rule from the audited `high_precision_rules` list (first-match semantics kept).
+    2. Model p_max ≥ τ_accept.
+    3. If an LLM is configured, the LLM chooses among the model's top-3. An answer outside them, or REVIEW, goes to review.
+    4. With no LLM, or a failed call, p_max ≥ τ_review → ml (degraded accept); otherwise review, keeping the model's best guess so downstream stages never see `None`.
+  - **No model → v2, unchanged.** The full rule list with the catch-alls runs, and the categories are identical to before (tested).
+  - `Categoriser(model="auto" | None | CategoriserModel)`. `CATEGORISER_ML_ENABLED=false` forces v2.
+  - The routing decisions (`route_ml`, `route_without_llm`, `route_llm_answer`) are pure functions with their own tests.
+- **Per-row provenance.**
+  - `CanonicalTransaction` gains `category_source` and `category_confidence` (optional, additive).
+  - `CategorisationStats` gains `ml_matched`, `review` and `model_version`. The invariant is now rule + ml + llm + review + other = total.
+  - `db/repositories/results._categorisation` writes source, confidence and the ML `model_version` from them instead of re-deriving.
+  - Migration **0002** adds `review` to `ck_categorisations_source`. SQLite rebuilds the table from an explicit definition, since it can't alter or reflect CHECKs; Postgres drops and re-creates the constraint.
+- **ML package (`ml/`, new).**
+  - `features/categoriser.py`: one feature builder for training (corpus rows) and serving (`CanonicalTransaction`).
+  - `registry.py`: `model.joblib` + `metadata.json` (git sha + dirty flag, corpus/splits hash, split, params, metrics, library versions, artifact sha256, checked before unpickling).
+  - `categoriser/{data,rule_audit,train,evaluate,infer,metrics}.py`, `config.yaml`, `README.md`.
+  - `data.py` refuses to run unless `corpus_hash` and `splits_hash` match the pinned values (`--allow-unpinned` for CI's v1-small).
+- **Config.**
+  - `config/thresholds.yaml → categoriser` gains `model_version`, `tau_accept`, `tau_review` and `high_precision_rules`; the loader learns `str` and `tuple[int, ...]`.
+  - `config/settings.py` gains `categoriser_model_version` (env override) and `categoriser_ml_enabled`.
+- **Infra.**
+  - `[ml]` extra += joblib, matplotlib, lightgbm.
+  - `ml*` is packaged.
+  - `.gitignore`: `models/**` except `metadata.json`.
+  - Makefile: `categoriser-audit`, `categoriser-train`, `categoriser-eval`; gated mypy now covers `ml/`.
+  - CI trains an LR (C=1) on v1-small and exports `CATEGORISER_MODEL_VERSION` before the tests and the regression.
+  - ADR-0004 covers the local registry and the pickle trust boundary.
+- **Decisions made in this session (by the user):**
+  - CI trains its own small model rather than committing the artifact.
+  - matplotlib, lightgbm and MiniLM were approved.
+  - **τ policy floor:** thresholds.yaml holds max(validation τ, 0.90 / 0.50), because the corpus can't calibrate τ.
+  - **SELF TRANSFER label inconsistency:** documented, to fix in the generator in a later phase; rule 7 stays excluded.
+
+### Rule precision audit (D10): `python -m ml.categoriser.rule_audit data/corpus/v1`
+
+Selected on company train+val. High precision means precision ≥ 0.99, support ≥ 50, not a generic fallback and not template-concentrated. Result: `[0, 1, 4, 5, 8, 9, 10]`. The full table is in the model card. Notable:
+- `self_transfer`: 0/91 correct (the corpus labels these FOUNDER_WITHDRAWAL).
+- `rail_debit_vendor`: 0.6689, and `catchall_debit_vendor`: 0.5163. Together they mislabel 43,349 SALARY rows as VENDOR_PAYMENT.
+- `personal_suffix`: flagged as generator-fitted (one template).
+
+### Training: `python -m ml.categoriser.train data/corpus/v1 --split <s> --n-jobs 3|4`
+
+- The three splits ran as concurrent processes. Unseen-vendor took 1,723 s, including 643 s of MiniLM encoding over 137,352 unique normalised narrations. Company and cross-bank were re-run together in 1,057 s.
+- The first concurrent attempt crashed the calibrated-SVC step on company and cross-bank with `WinError 1450` (nested process × grid × fold parallelism). Calibration folds now run sequentially inside a parallel grid.
+- An earlier sequential run was stopped for two reasons. A new test found the VPA mask swallowing the merchant name before `/handle` (fixed: `[A-Za-z0-9._-]+@…`). Later, the run was restarted with parallelism. No model from those runs was kept.
+
+| split | candidate | val macro-F1 | test macro-F1 | val acc | test acc | chosen (val) |
+|---|---|---|---|---|---|---|
+| company | lr (C=10) | 0.9576 | 0.9675 | 0.9998 | 0.9999 |  |
+| company | svc_cal (C=0.1) | 0.9964 | 1.0000 | 1.0000 | 1.0000 | yes |
+| company | lgbm | 0.9946 | 0.9624 | 1.0000 | 1.0000 |  |
+| cross_bank | lr (C=10) | 0.9395 | 0.9352 | 0.9997 | 0.9985 |  |
+| cross_bank | svc_cal (C=0.3) | 1.0000 | 0.9967 | 1.0000 | 0.9999 | yes |
+| cross_bank | lgbm | 0.9630 | 0.9416 | 1.0000 | 0.9811 |  |
+| unseen_vendor | lr (C=3) | 0.9698 | 0.9854 | 0.9998 | 0.9998 |  |
+| unseen_vendor | svc_cal (C=0.1) | 0.9762 | 0.9762 | 1.0000 | 0.9999 | yes |
+| unseen_vendor | lgbm | 0.9762 | 0.9640 | 1.0000 | 0.9994 |  |
+| unseen_vendor | lr + MiniLM | 0.9429 | 0.9822 | 0.9998 | 0.9998 |  |
+
+LightGBM and MiniLM are not kept: neither wins on validation. Production model: `cat3-svc_cal-company-8a28bbe2-191ad9` (3.1 MB).
+
+### Evaluation: `python -m ml.categoriser.evaluate data/corpus/v1 --write-thresholds`
+
+Before (rules v2) vs after (hybrid, no LLM), test splits, τ frozen from validation:
+
+| split | variant | n | accuracy | macro-P | macro-R | macro-F1 |
+|---|---|---|---|---|---|---|
+| company | rules_v2 | 93217 | 0.9172 | 0.7392 | 0.6561 | 0.6648 |
+| company | hybrid_no_llm | 93217 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| cross_bank | rules_v2 | 306481 | 0.9335 | 0.7438 | 0.6725 | 0.6846 |
+| cross_bank | hybrid_no_llm | 306481 | 1.0000 | 1.0000 | 0.9835 | 0.9911 |
+| unseen_vendor | rules_v2 | 58925 | 0.9950 | 0.6639 | 0.5153 | 0.5266 |
+| unseen_vendor | hybrid_no_llm | 58925 | 0.9999 | 1.0000 | 0.9417 | 0.9646 |
+
+- Macro averages are over classes with test support. **LOAN_OUT has 0 rows and can't be evaluated.**
+- REVENUE is 55% of rows, so accuracy hides minority-class errors; the macro and per-class tables are the ones to read.
+- On the 6.9% inline (undiversified) rows, rules_v2 and hybrid both score 1.0000, so those rows say nothing about generalisation.
+- **τ:** company validation gives τ_accept = τ_review = **0.30**, the grid floor, because precision is ≥ 0.97 at every τ. thresholds.yaml holds the policy floor **0.90 / 0.50**.
+  - With policy τ on test: rule 34.71 / 15.38 % (company / unseen-vendor).
+  - ML band 0.5–0.9: 0.008 / 0.017 / 0.025 % of rows (company / cross-bank / unseen-vendor); review 0%.
+  - Precision of auto-accepted rows 1.0000 / 1.0000 / 0.9999.
+  - Expected LLM calls if a key were set: **0.08 / 0.14 / 0.22 per 1,000 transactions**. The true class is in the top-3 for 100% of band rows.
+  - Validation top-label ECE ≈ 0.0001.
+- **Latency** (1,000-row document, median of 5): v3 categorise **112.0 ms per 1k rows**; model predict 108.8 ms; v2 rules 27.8 ms.
+- Outputs: `results/categoriser/cat3-svc_cal-company-8a28bbe2-191ad9/` (gitignored), containing metrics, per-class CSVs, confusion PNG + CSV, precision–coverage PNG + CSV, routing, latency and `report.md`.
+
+### Files
+
+- **Added:**
+  - `ml/__init__.py`, `ml/registry.py`
+  - `ml/features/{__init__,categoriser}.py`
+  - `ml/categoriser/{__init__,data,rule_audit,train,evaluate,infer,metrics}.py`, `ml/categoriser/config.yaml`, `ml/categoriser/README.md`
+  - `models/categoriser/*/metadata.json` (9 models)
+  - `db/migrations/versions/0002_categorisation_review_source.py`
+  - `docs/ml/categoriser.md`, `docs/adr/0004-categoriser-model-registry.md`
+  - `tests/test_ml_categoriser.py`, `tests/test_categoriser_routing.py`
+- **Modified:**
+  - `analysis/categoriser.py`
+  - `schema/canonical.py`
+  - `config/{settings,thresholds}.py`, `config/thresholds.yaml`
+  - `pipeline/{run,versioning}.py`
+  - `db/models.py`, `db/repositories/results.py`
+  - `worker/runner.py`
+  - `pyproject.toml`, `Makefile`, `.gitignore`, `.github/workflows/ci.yml`
+  - tests: `tests/test_categoriser.py`, `tests/test_thresholds.py`, `tests/platform/{test_api,test_jobs_worker,test_models_migration}.py`
+- **Removed:** none
+
+### Existing tests consciously updated
+
+- `test_categoriser.py::test_rule_match_rate_is_high` is now pinned to `model=None`, the v2 path. Under v3 the catch-alls aren't rules, so the rule rate drops by design. New companion: `test_v3_deterministic_coverage_is_high` (rule + ml ≥ 90%).
+- `test_stats_totals_match_transaction_count`: the invariant now includes `ml_matched + review`.
+- `TestLLMPlumbing` (2 tests): pinned to `model=None`, since they test the v2 LLM path. v3 LLM routing is tested in `test_categoriser_routing.py`.
+- `platform/test_jobs_worker.py::test_gold_pdf_end_to_end`: expects categoriser `3.0.0`.
+- `platform/test_api.py`:
+  - `test_transactions_paginated_and_filtered` assumed "the gold set is fully rule-categorised". It now checks that the per-source filter partitions the run.
+  - `test_manual_override_keeps_history` now expects the original source (rule or ml) in the history row.
+  - Both pass with the model and with `CATEGORISER_ML_ENABLED=false`.
+
+### Verified (run in this session, Windows 11, Python 3.12.2, scikit-learn 1.9.1, LightGBM 4.7.0, pyarrow 26.0.0)
+
+| Check | Before (0f59c80) | After |
+|---|---|---|
+| corpus / splits rebuild | n/a | `corpus_hash 8a28bbe2…f3d1`, `splits_hash a905e9f1…` (match the pins) |
+| `pytest tests/ -q --ignore=tests/regression` | 1123 passed, 5 skipped (Phase 3 entry) | **1172 passed, 5 skipped** (production model configured) |
+| `pytest tests/regression` | 7 passed, 1 xfailed, 1 xpassed | 7 passed, 1 xfailed, 1 xpassed |
+| Extraction / Categorisation | 1.0 / **0.9991** | 1.0 / **0.9986** |
+| Risk recall / Compliance recall | 0.8846 (n=13) / 0.9 (n=10) | 0.8846 / 0.9 (unchanged) |
+| Customer ID accuracy | 0.6662 (pairs=176521) | 0.6662 (unchanged) |
+| CI simulation (v1-small LR via `CATEGORISER_MODEL_VERSION`) | n/a | categoriser/API/worker tests 130 passed; regression categorisation 0.998 |
+
+- **`gold_regression.json` diff:** the only changed metric is `categorisation_accuracy` 0.9991 → 0.9986 (4,367 → 4,365 of 4,371 matched rows). From per-row inspection:
+  - **+2:** ZENITH CAPITAL ADVISORY round-trip debits are now TRANSFER (v2 said VENDOR_PAYMENT).
+  - **−4:** `NEFT … SELF TRANSFER XXXX3425` in `icici_services_firm_80e19b` is TRANSFER in the gold truth, but the model says FOUNDER_WITHDRAWAL (debits, p 0.99) or REVENUE (credits, p 0.56–0.57). The corpus labels "SELF TRANSFER" as FOUNDER_WITHDRAWAL, so this is a generator labelling inconsistency, not a model bug. Target 0.88 still passes.
+- Earlier full-suite runs in the session:
+  - **No model configured:** 2 failures. One was the pinned `2.0.0` (fixed). The other was `test_vc_lens::test_generate_is_idempotent`, the known timestamp flake, which ran under CPU load from training and passed 3/3 when re-run alone.
+  - **With the model:** 2 `test_api` failures, the conscious updates above.
+- `ruff check .` clean. `mypy --follow-imports=silent schema/ pipeline/ config/ llm/ db/ api/ worker/ datasets/ ml/`: `Success: no issues found in 58 source files`.
+- **Security (manual; `/security-review` can't run here):**
+  - New log lines carry counts, versions, timings and exception types only.
+  - `joblib.load` is reached only via `registry.load`, after the path-component check and the sha256 match.
+  - Model location and version come from operator config or env, never from uploads.
+  - No findings.
+
+### Not verified / known gaps
+
+- **CI not yet run** for this branch at the time of writing (see the CI line below once pushed).
+- **No LLM was called.** The LLM-with-top-3 path is tested with mocks only. "LLM calls per 1k" is an estimate from routing.
+- **τ is a policy floor, not a fitted value.** The synthetic corpus is too easy to calibrate it; re-tune on labelled real data.
+- **Near-perfect scores reflect template-generated narrations.** Real-world performance is unknown. The honest D10 comparison is rules_v2 macro-F1 0.66–0.68 vs hybrid 0.96–1.00 on the same synthetic splits.
+- **SELF TRANSFER labelling differs between corpus mode and the legacy generator.** It costs 4 gold rows; fixing it needs a generator change and a new corpus version.
+- **High-precision rule 8 (`INV-` credit → REVENUE) costs TRANSFER recall** on cross-bank (0.94 → 0.85) and unseen-vendor (0.75 → 0.65), on 54 and 20 rows.
+- **The unseen-vendor split has no SALARY, TAX or FEES test rows** (generic counterparties are always train).
+- **Grid edges:** cross-bank SVC chose C=0.3, the top of {0.1, 0.3}.
+- **Models were trained from an uncommitted working tree on base 0f59c80.** Their metadata says `git_sha 0f59c80` and predates the `git_dirty` field.
+- `make categoriser-*` targets weren't run through make (only the underlying commands).

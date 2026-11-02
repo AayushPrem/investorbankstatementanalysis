@@ -1,0 +1,67 @@
+# Phase 4 categoriser: training / evaluation configuration.
+# SYNTHETIC data only (generator v2.0.0, corpus v1). See docs/ml/categoriser.md.
+
+# Data gate: train/evaluate refuse to run unless the corpus and split hashes
+# match (pyarrow 26.0.0; see docs/ml/corpus_card.md). Unpinned corpora (e.g.
+# CI's v1-small) need --allow-unpinned and are recorded as such in metadata.
+pinned_corpora:
+  v1:
+    corpus_hash: 8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1
+    splits_hash: a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe
+
+splits:                       # name -> split file under <corpus>/splits/
+  company: company.parquet
+  cross_bank: categoriser_cross_bank.parquet
+  unseen_vendor: categoriser_unseen_vendor.parquet
+production_split: company     # the model the pipeline loads, and the τ source
+
+features:
+  char_max_features: 200000
+  word_max_features: 50000
+  min_df: 2
+
+train:
+  max_rows_per_class: null    # null = no cap (all training rows)
+  seed: 42
+
+models:
+  lr:
+    C_grid: [1.0, 3.0, 10.0, 30.0, 100.0]   # first run picked 10 = old grid top
+    max_iter: 300
+  svc_cal:
+    C_grid: [0.1, 0.3]          # C=0.1/0.3 tied on company val; C=1 hit a ConvergenceWarning
+    calibration_cv: 3
+  lgbm:
+    early_stopping_rounds: 20 # on the validation split (tuning, not test)
+    n_estimators: 300
+    learning_rate: 0.1
+    num_leaves: 31
+  minilm:
+    model_name: sentence-transformers/all-MiniLM-L6-v2
+    splits: [unseen_vendor]   # evaluated where it could help (new vendors)
+
+# Model-selection metric (on VALIDATION): macro-F1 over classes with support.
+selection_metric: macro_f1
+
+rule_audit:
+  min_precision: 0.99
+  min_support: 50
+  # Concentration check for rules fitted to generator quirks (D10).
+  max_top_template_share: 0.90
+  min_distinct_templates: 3
+  # Excluded from the high-precision list by construction: generic fallbacks.
+  excluded_by_construction: [rail_debit_vendor, catchall_credit_revenue, catchall_debit_vendor]
+  # Flagged from code review: comment in analysis/categoriser.py says
+  # "Synthetic gen uses '{Name} PERSONAL' for founder withdrawals".
+  known_generator_fitted: [personal_suffix]
+
+routing:
+  target_accept_precision: 0.97   # τ_accept: lowest τ with ML-accepted precision ≥ this
+  target_band_precision: 0.90     # τ_review: lowest τ with [τ_review, τ_accept) precision ≥ this
+  tau_grid: {start: 0.30, stop: 0.99, step: 0.01}
+  # Policy floor (user decision, Phase 4): on corpus v1 the validation rule picks
+  # the grid floor (0.30) because precision is >= 0.97 everywhere, i.e. the
+  # synthetic corpus cannot calibrate tau. thresholds.yaml gets
+  # max(validation tau, floor); both settings are reported.
+  policy_floor: {tau_accept: 0.90, tau_review: 0.50}
+  llm_batch_size: 50

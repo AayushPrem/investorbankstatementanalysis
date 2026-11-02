@@ -121,6 +121,12 @@ class RelatedPartyThresholds:
 @dataclass(frozen=True)
 class CategoriserThresholds:
     llm_batch_size: int
+    # Phase 4 (v3 routing). tau_* are chosen on the company-split VALIDATION
+    # precision-coverage curve by ml/categoriser/evaluate.py, for model_version.
+    model_version: str
+    tau_accept: float
+    tau_review: float
+    high_precision_rules: tuple[int, ...]   # indices into analysis.categoriser._RULES (rule audit)
 
 
 @dataclass(frozen=True)
@@ -153,6 +159,14 @@ def _coerce(name: str, value: Any, typ: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ThresholdConfigError(f"{name}: expected number, got {value!r}")
         return float(value)
+    if typ is str:
+        if not isinstance(value, str):
+            raise ThresholdConfigError(f"{name}: expected string, got {value!r}")
+        return value
+    if typ == tuple[int, ...]:
+        if not isinstance(value, list) or any(isinstance(v, bool) or not isinstance(v, int) for v in value):
+            raise ThresholdConfigError(f"{name}: expected a list of ints, got {value!r}")
+        return tuple(value)
     if typ == dict[str, float]:
         if not isinstance(value, dict):
             raise ThresholdConfigError(f"{name}: expected mapping, got {value!r}")

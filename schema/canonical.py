@@ -47,6 +47,10 @@ class CanonicalTransaction(BaseModel):
 
     # Enrichment slots — filled by later pipeline agents
     category: TransactionCategory | None = None
+    # Phase 4: which routing step set `category` (rule / ml / llm / review /
+    # default) and, for ML-routed rows, the model's probability for it.
+    category_source: str | None = None
+    category_confidence: float | None = None
     counterparty: str | None = None
     is_recurring: bool | None = None
     is_related_party: bool | None = None

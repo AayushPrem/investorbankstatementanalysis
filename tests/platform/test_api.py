@@ -165,9 +165,12 @@ def test_transactions_paginated_and_filtered(client: TestClient, headers: dict[s
     by_date = client.get(f"/v1/runs/{rid}/transactions?date_from={d}&date_to={d}&limit=500",
                          headers=headers).json()
     assert all(t["txn_date"] == d for t in by_date["items"])
-    by_source = client.get(f"/v1/runs/{rid}/transactions?source=rule&limit=1",
-                           headers=headers).json()
-    assert by_source["total"] == page["total"]  # the gold set is fully rule-categorised
+    # Phase 4: v3 routing splits rows across sources (rule + ml with a model,
+    # all rule on the v2 fallback). The per-source filter must partition the run.
+    totals = {src: client.get(f"/v1/runs/{rid}/transactions?source={src}&limit=1",
+                              headers=headers).json()["total"]
+              for src in ("rule", "ml", "llm", "review", "default")}
+    assert sum(totals.values()) == page["total"] and totals["rule"] >= 1
     # money is exact (Decimal → string), never a float
     assert isinstance(page["items"][0]["balance"], str)
     _error(client.get(f"/v1/runs/{rid}/transactions?limit=0", headers=headers), 422,
@@ -190,6 +193,7 @@ def test_manual_override_keeps_history(client: TestClient, headers: dict[str, st
 
     rid = processed["run_id"]
     txn = client.get(f"/v1/runs/{rid}/transactions?limit=1", headers=headers).json()["items"][0]
+    original_source = txn["category_source"]   # Phase 4: rule or ml, depending on routing
     r = client.patch(f"/v1/transactions/{txn['id']}/category", json={"category": "TAX"},
                      headers=headers)
     assert r.status_code == 200
@@ -199,7 +203,8 @@ def test_manual_override_keeps_history(client: TestClient, headers: dict[str, st
     with factory() as s:
         rows = list(s.scalars(select(Categorisation).where(
             Categorisation.transaction_id == uuid.UUID(txn["id"]))))
-    assert sorted((c.source, c.is_current) for c in rows) == [("manual", True), ("rule", False)]
+    assert sorted((c.source, c.is_current) for c in rows) == sorted(
+        [("manual", True), (original_source, False)])
     _error(client.patch(f"/v1/transactions/{txn['id']}/category", json={"category": "BRIBES"},
                         headers=headers), 422, "invalid_request")
     _error(client.patch("/v1/transactions/00000000-0000-0000-0000-000000000000/category",

@@ -1,0 +1,99 @@
+{
+  "algo": "lgbm",
+  "artifact_bytes": 1420350,
+  "artifact_sha256": "da2903265365df6bbd2b6f0059a4bd63e5b6d715c602450617e406f9c1b98c63",
+  "classes": [
+    "FEES",
+    "FOUNDER_WITHDRAWAL",
+    "LOAN_IN",
+    "OTHER",
+    "REVENUE",
+    "SALARY",
+    "TAX",
+    "TRANSFER",
+    "VENDOR_PAYMENT"
+  ],
+  "corpus": {
+    "corpus_dir": "v1",
+    "corpus_hash": "8a28bbe2c231577f9f8f05c21e6a180ce25d26a40bf224c007db0dde5fc4f3d1",
+    "corpus_version": "v1",
+    "generator_version": "2.0.0",
+    "pinned": true,
+    "splits_hash": "a905e9f115aae4f98f311806d6701e41d5527056164fa2c6a03372dfdc6d9efe"
+  },
+  "created_at": "2026-11-02T14:49:56+00:00",
+  "git_sha": "0f59c80b04d0a1fbfc6bed9d576100653600aec2",
+  "libraries": {
+    "joblib": "1.6.0",
+    "numpy": "2.5.4",
+    "python": "3.12.2",
+    "sklearn": "1.9.1"
+  },
+  "metrics": {
+    "test": {
+      "accuracy": 0.9811146531106333,
+      "macro_f1": 0.9416201728385849,
+      "macro_over": [
+        "REVENUE",
+        "VENDOR_PAYMENT",
+        "SALARY",
+        "LOAN_IN",
+        "TAX",
+        "TRANSFER",
+        "FOUNDER_WITHDRAWAL",
+        "FEES",
+        "OTHER"
+      ],
+      "macro_precision": 0.9700589089251255,
+      "macro_recall": 0.9305983260002397,
+      "n": 306481,
+      "not_evaluable": [
+        "LOAN_OUT"
+      ]
+    },
+    "val": {
+      "accuracy": 0.999957848592143,
+      "macro_f1": 0.9629527889855931,
+      "macro_over": [
+        "REVENUE",
+        "VENDOR_PAYMENT",
+        "SALARY",
+        "LOAN_IN",
+        "TAX",
+        "TRANSFER",
+        "FOUNDER_WITHDRAWAL",
+        "FEES",
+        "OTHER"
+      ],
+      "macro_precision": 0.9999796533028638,
+      "macro_recall": 0.9444444444444444,
+      "n": 47448,
+      "not_evaluable": [
+        "LOAN_OUT"
+      ]
+    }
+  },
+  "model_version": "cat3-lgbm-cross_bank-8a28bbe2-c7800c",
+  "n_test": 306481,
+  "n_train": 263554,
+  "n_val": 47448,
+  "name": "categoriser",
+  "params": {
+    "algo": "lgbm",
+    "best_iteration": 95,
+    "feature_version": "1",
+    "features": {
+      "char_max_features": 200000,
+      "min_df": 2,
+      "word_max_features": 50000
+    },
+    "learning_rate": 0.1,
+    "max_rows_per_class": null,
+    "n_estimators": 300,
+    "num_leaves": 31,
+    "seed": 42
+  },
+  "selected_on_val": false,
+  "split": "cross_bank",
+  "synthetic": "generator v2.0.0, corpus v1"
+}

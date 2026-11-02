@@ -136,3 +136,58 @@ def test_money_round_trips_as_decimal(factory: sessionmaker[Session]) -> None:
         t = s.query(Transaction).one()
         assert t.credit == Decimal("123456789.12") and isinstance(t.credit, Decimal)
         assert t.balance == Decimal("9999999999.99")
+
+
+# ── Phase 4: 'review' categorisation source (migration 0002) ────────────────
+
+def test_migration_0002_allows_review_source(tmp_path: Path) -> None:
+    engine = make_engine(f"sqlite:///{tmp_path / 'r.db'}")
+    assert upgrade_and_diff(engine) == []
+    factory = sessionmaker(bind=engine)
+    with factory() as s:
+        st = _statement(s)
+        t = _txn(st, 0)
+        s.add(t)
+        s.flush()
+        s.add(Categorisation(transaction_id=t.id, category="SALARY", source="review",
+                             confidence=0.41, model_version="cat3-x", is_current=True))
+        s.commit()
+        tid = t.id
+    with factory() as s:
+        s.add(Categorisation(transaction_id=tid, category="OTHER", source="bogus", is_current=False))
+        with pytest.raises(IntegrityError):
+            s.flush()
+    # the partial unique index survived the SQLite table rebuild
+    with factory() as s:
+        s.add(Categorisation(transaction_id=tid, category="OTHER", source="rule", is_current=True))
+        with pytest.raises(IntegrityError):
+            s.flush()
+    cfg = _alembic_cfg()
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.downgrade(cfg, "0001")
+    with engine.connect() as conn:
+        from sqlalchemy import text
+        assert conn.execute(text("SELECT source FROM categorisations")).scalar_one() == "default"
+    engine.dispose()
+
+
+def test_categorisation_row_uses_v3_provenance() -> None:
+    from db.repositories.results import _categorisation
+    from schema.canonical import CanonicalTransaction, SourceReference, TransactionCategory
+
+    def txn(desc: str, cat: TransactionCategory, src: str | None, conf: float | None) -> CanonicalTransaction:
+        return CanonicalTransaction(
+            transaction_id="t", date=dt.date(2024, 4, 1), description=desc, debit=Decimal("10"),
+            balance=Decimal("0"), category=cat, category_source=src, category_confidence=conf,
+            source_reference=SourceReference(file_path="x", page=0, row=0, raw_text=""),
+        )
+
+    u = uuid.uuid4()
+    c = _categorisation(u, txn("IMPS/RAVI/X", TransactionCategory.SALARY, "review", 0.4), "cat3-m")
+    assert (c.source, c.confidence, c.model_version, c.rule_id) == ("review", 0.4, "cat3-m", None)
+    c = _categorisation(u, txn("SALARY APR", TransactionCategory.SALARY, "rule", 1.0), "cat3-m")
+    assert c.source == "rule" and c.rule_id == "rule_0" and c.model_version != "cat3-m"
+    # categorised without provenance (pre-v3 callers): derived as before
+    c = _categorisation(u, txn("SALARY APR", TransactionCategory.SALARY, None, None))
+    assert (c.source, c.rule_id) == ("rule", "rule_0")

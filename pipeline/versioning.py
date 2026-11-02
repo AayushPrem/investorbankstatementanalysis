@@ -33,7 +33,7 @@ AGENT_VERSIONS: dict[str, str] = {
     "adapter.image": "1.0.0",
     "normaliser": "1.0.0",
     "validator": "1.0.0",
-    "categoriser": "2.0.0",  # bumped Sprint 2 Step 2.6 — prompt refinement for accuracy
+    "categoriser": "3.0.0",  # Phase 4: hybrid rule → ML → LLM(top-3) → review routing
     "related_party": "1.0.0",
     "customer_identity": "1.0.0",
     "financial_analyst": "1.0.0",
